@@ -45,6 +45,13 @@ checkouts.
 
     sudo apt install ./kicad_*.deb ./kicad-packages3d_*.deb
 
+Name both files. `kicad` recommends `kicad-packages3d` at exactly its own
+version, so naming only the first leaves the recommendation unsatisfied and
+apt installs `kicad` alone -- rather than resolving the name against a
+configured repository and pulling a 3D-model package from a different KiCad
+release, which is what an unversioned recommendation invites when the KiCad
+PPA is enabled.
+
 ## Patches
 
 `patches/kicad/*.patch` are applied to the KiCad checkout after the workspace
