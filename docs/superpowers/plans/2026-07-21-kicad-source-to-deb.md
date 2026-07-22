@@ -35,7 +35,8 @@
 | `uninstall-usr-local.sh` | Removes a prior `/usr/local` source install. |
 | `packaging/kicad.control.in` | Control template for the main package |
 | `packaging/kicad-packages3d.control.in` | Control template for the models package |
-| `packaging/*.postinst`, `packaging/*.postrm` | Cache refresh hooks |
+| `packaging/kicad.postinst` | Migration warnings (caches are trigger-driven) |
+| `packaging/kicad.triggers` | Opts into the named `ldconfig` trigger |
 | `tests/*.bats` | Unit tests for `lib/` |
 | `README.md` | Usage |
 
@@ -612,30 +613,28 @@ Description: 3D component models for KiCad
  without component bodies.
 ```
 
-- [ ] **Step 3: Write `packaging/kicad.postinst`**
+- [ ] **Step 3: Write `packaging/kicad.triggers`**
+
+```
+activate-noawait ldconfig
+```
+
+`libc-bin` declares `ldconfig` as a *named* trigger (`interest-await ldconfig`), so a package
+shipping shared libraries opts in rather than calling `ldconfig` itself.
+
+The other three caches need nothing: `desktop-file-utils`, `shared-mime-info` and
+`hicolor-icon-theme` declare **path-based** triggers on `/usr/share/applications`,
+`/usr/share/mime/packages` and `/usr/share/icons/hicolor` respectively. Installing files into
+those paths fires `update-desktop-database`, `update-mime-database` and the icon-cache rebuild
+automatically. Calling them from a maintainer script would duplicate work dpkg already does.
+
+- [ ] **Step 4: Write `packaging/kicad.postinst`**
+
+This exists solely for the two migration warnings. Cache refreshes are handled by triggers.
 
 ```bash
 #!/bin/sh
 set -e
-
-# KiCad sets no INSTALL_RPATH on Linux and installs its shared libraries under
-# the standard prefix, so the loader cache must be refreshed or every binary
-# fails to start.
-if command -v ldconfig > /dev/null 2>&1; then
-    ldconfig
-fi
-
-if command -v update-desktop-database > /dev/null 2>&1; then
-    update-desktop-database -q /usr/share/applications || true
-fi
-
-if command -v gtk-update-icon-cache > /dev/null 2>&1; then
-    gtk-update-icon-cache -q -f /usr/share/icons/hicolor || true
-fi
-
-if command -v update-mime-database > /dev/null 2>&1; then
-    update-mime-database /usr/share/mime || true
-fi
 
 # A prior source install under /usr/local shadows this package: /usr/local/bin
 # precedes /usr/bin on the default PATH, so the old binary keeps running.
@@ -659,60 +658,29 @@ done
 exit 0
 ```
 
-- [ ] **Step 4: Write `packaging/kicad.postrm`**
+- [ ] **Step 5: Deliberately ship no `postrm`, and no maintainer scripts for `kicad-packages3d`**
 
-```bash
-#!/bin/sh
-set -e
+There is no `packaging/kicad.postrm`: the trigger-driven caches clean themselves up on removal,
+and the migration warnings are meaningless at that point.
 
-if [ "$1" = "remove" ]; then
-    if command -v ldconfig > /dev/null 2>&1; then
-        ldconfig
-    fi
-    if command -v update-desktop-database > /dev/null 2>&1; then
-        update-desktop-database -q /usr/share/applications || true
-    fi
-    if command -v gtk-update-icon-cache > /dev/null 2>&1; then
-        gtk-update-icon-cache -q -f /usr/share/icons/hicolor || true
-    fi
-    if command -v update-mime-database > /dev/null 2>&1; then
-        update-mime-database /usr/share/mime || true
-    fi
-fi
+`kicad-packages3d` gets **no maintainer scripts and no triggers**. It ships only data — no
+executables, no shared libraries, no desktop files, no icons — so nothing needs to fire. This
+matches normal Debian practice: 3,027 of the 3,180 packages installed on this machine carry no
+maintainer scripts at all.
 
-exit 0
-```
+Task 6's `build_package()` installs `postinst` and `triggers` **only when the file exists**, so
+the absence is handled without placeholder no-op scripts.
 
-- [ ] **Step 5: Write `packaging/kicad-packages3d.postinst` and `.postrm`**
+- [ ] **Step 6: Lint the maintainer script**
 
-`packaging/kicad-packages3d.postinst`:
-
-```bash
-#!/bin/sh
-set -e
-exit 0
-```
-
-`packaging/kicad-packages3d.postrm`:
-
-```bash
-#!/bin/sh
-set -e
-exit 0
-```
-
-The models package ships only data files, so there is nothing to refresh. The scripts exist so the packaging code path is uniform across both packages.
-
-- [ ] **Step 6: Lint the maintainer scripts**
-
-Run: `shellcheck packaging/*.postinst packaging/*.postrm`
-Expected: no output. These are `/bin/sh`, so shellcheck checks them as POSIX sh.
+Run: `shellcheck packaging/kicad.postinst`
+Expected: no output. It is `/bin/sh`, so shellcheck checks it as POSIX sh.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add packaging/
-git commit -m "Add control templates and maintainer scripts for both packages"
+git commit -m "Add control templates, ldconfig trigger and migration warnings"
 ```
 
 ---
@@ -845,8 +813,12 @@ build_package() {
         -e "s|@DEPENDS@|$DEPENDS|g" \
         "$SCRIPT_DIR/packaging/$name.control.in" > "$pkgdir/control"
 
-    install -m 0755 "$SCRIPT_DIR/packaging/$name.postinst" "$pkgdir/postinst"
-    install -m 0755 "$SCRIPT_DIR/packaging/$name.postrm" "$pkgdir/postrm"
+    # Only the kicad package has these; the models package is pure data and
+    # correctly ships none.
+    [ -f "$SCRIPT_DIR/packaging/$name.postinst" ] &&
+        install -m 0755 "$SCRIPT_DIR/packaging/$name.postinst" "$pkgdir/postinst"
+    [ -f "$SCRIPT_DIR/packaging/$name.triggers" ] &&
+        install -m 0644 "$SCRIPT_DIR/packaging/$name.triggers" "$pkgdir/triggers"
 
     fakeroot dpkg-deb --build "$stage" \
         "$ORIG_DIR/${name}_${VERSION}_${arch}.deb"

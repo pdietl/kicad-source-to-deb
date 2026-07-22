@@ -3,3 +3,4 @@ stage-*/
 *.deb
 *.buildinfo
 *.changes
+.superpowers/
