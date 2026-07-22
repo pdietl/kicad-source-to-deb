@@ -396,6 +396,47 @@ teardown() {
     cp /bin/ls "$STAGE/usr/lib/libkicommon.so.10.0.5"
     run kicad_shlibdeps "$STAGE"
     [ "$status" -eq 0 ]
+    [ -n "$output" ]
+}
+
+@test "a dpkg-shlibdeps failure is not masked as success" {
+    # Shim dpkg-shlibdeps ahead of the real one on PATH so it fails outright;
+    # the function must surface that failure, not swallow it behind $?
+    # clobbered by the later cleanup or a printf that always exits 0.
+    shim_dir=$(mktemp -d)
+    cat >"$shim_dir/dpkg-shlibdeps" <<'SHIM'
+#!/usr/bin/env bash
+echo "dpkg-shlibdeps: fatal error: shimmed failure" >&2
+exit 2
+SHIM
+    chmod +x "$shim_dir/dpkg-shlibdeps"
+
+    OLDPATH="$PATH"
+    PATH="$shim_dir:$PATH"
+    run kicad_shlibdeps "$STAGE"
+    PATH="$OLDPATH"
+    rm -rf "$shim_dir"
+
+    [ "$status" -ne 0 ]
+}
+
+@test "a statically-linked ELF with no NEEDED entries fails rather than emitting empty deps" {
+    static_stage=$(mktemp -d)
+    mkdir -p "$static_stage/usr/bin"
+    src=$(mktemp --suffix=.c)
+    echo 'int main(void) { return 0; }' >"$src"
+
+    if ! gcc -static -o "$static_stage/usr/bin/static-noop" "$src" 2>/dev/null; then
+        rm -f "$src"
+        rm -rf "$static_stage"
+        skip "static libc unavailable; cannot build a statically-linked test binary"
+    fi
+    rm -f "$src"
+
+    run kicad_shlibdeps "$static_stage"
+    rm -rf "$static_stage"
+
+    [ "$status" -ne 0 ]
 }
 ```
 
@@ -417,11 +458,13 @@ Create `lib/shlibdeps.sh`:
 #   - it refuses to start without a debian/control file, so one is synthesised;
 #   - it treats a library belonging to no package as fatal, which is exactly what
 #     KiCad's own libkicommon.so is, so -l points it at the staged lib directory
-#     and --ignore-missing-info downgrades the failure.
+#     and --ignore-missing-info downgrades the failure. KiCad also installs its
+#     kiface plugin modules a directory deeper, under usr/lib/kicad, so that path
+#     is added too -- without it those modules' own NEEDED libs go unresolved.
 
 kicad_shlibdeps() {
     local stage=$1
-    local workdir elves out
+    local workdir elves out err rc
 
     if [ ! -d "$stage" ]; then
         echo "kicad_shlibdeps: no such stage directory: $stage" >&2
@@ -442,26 +485,43 @@ kicad_shlibdeps() {
     workdir=$(mktemp -d)
     mkdir -p "$workdir/debian"
     printf 'Source: kicad\n\nPackage: kicad\nArchitecture: amd64\n' \
-        > "$workdir/debian/control"
+        >"$workdir/debian/control"
 
+    err=$(mktemp)
     out=$(
         cd "$workdir" &&
             dpkg-shlibdeps -O --ignore-missing-info \
                 -l"$stage/usr/lib" \
                 -l"$stage/usr/lib/kicad" \
-                "${elves[@]}" 2>/dev/null
+                "${elves[@]}" 2>"$err"
     )
+    rc=$?
     rm -rf "$workdir"
 
+    if [ "$rc" -ne 0 ]; then
+        echo "kicad_shlibdeps: dpkg-shlibdeps failed for $stage:" >&2
+        cat "$err" >&2
+        rm -f "$err"
+        return 1
+    fi
+    rm -f "$err"
+
     # -O prints "shlibs:Depends=a, b, c"; callers want just the value.
-    printf '%s\n' "${out#shlibs:Depends=}"
+    out=${out#shlibs:Depends=}
+
+    if [ -z "$out" ]; then
+        echo "kicad_shlibdeps: dpkg-shlibdeps produced no dependencies for $stage" >&2
+        return 1
+    fi
+
+    printf '%s\n' "$out"
 }
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `bats tests/shlibdeps.bats`
-Expected: `5 tests, 0 failures`.
+Expected: `7 tests, 0 failures`.
 
 - [ ] **Step 5: Lint**
 
@@ -1044,7 +1104,7 @@ They are re-seeded against the new prefix on next launch.
 - [ ] **Step 4: Verify the tests referenced in the README actually pass**
 
 Run: `bats tests/`
-Expected: `22 tests, 0 failures` across the three test files (14 version, 5 shlibdeps, 3 stage).
+Expected: `24 tests, 0 failures` across the three test files (14 version, 7 shlibdeps, 3 stage).
 
 - [ ] **Step 5: Commit**
 

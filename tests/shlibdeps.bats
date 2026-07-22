@@ -42,4 +42,45 @@ teardown() {
     cp /bin/ls "$STAGE/usr/lib/libkicommon.so.10.0.5"
     run kicad_shlibdeps "$STAGE"
     [ "$status" -eq 0 ]
+    [ -n "$output" ]
+}
+
+@test "a dpkg-shlibdeps failure is not masked as success" {
+    # Shim dpkg-shlibdeps ahead of the real one on PATH so it fails outright;
+    # the function must surface that failure, not swallow it behind $?
+    # clobbered by the later cleanup or a printf that always exits 0.
+    shim_dir=$(mktemp -d)
+    cat >"$shim_dir/dpkg-shlibdeps" <<'SHIM'
+#!/usr/bin/env bash
+echo "dpkg-shlibdeps: fatal error: shimmed failure" >&2
+exit 2
+SHIM
+    chmod +x "$shim_dir/dpkg-shlibdeps"
+
+    OLDPATH="$PATH"
+    PATH="$shim_dir:$PATH"
+    run kicad_shlibdeps "$STAGE"
+    PATH="$OLDPATH"
+    rm -rf "$shim_dir"
+
+    [ "$status" -ne 0 ]
+}
+
+@test "a statically-linked ELF with no NEEDED entries fails rather than emitting empty deps" {
+    static_stage=$(mktemp -d)
+    mkdir -p "$static_stage/usr/bin"
+    src=$(mktemp --suffix=.c)
+    echo 'int main(void) { return 0; }' >"$src"
+
+    if ! gcc -static -o "$static_stage/usr/bin/static-noop" "$src" 2>/dev/null; then
+        rm -f "$src"
+        rm -rf "$static_stage"
+        skip "static libc unavailable; cannot build a statically-linked test binary"
+    fi
+    rm -f "$src"
+
+    run kicad_shlibdeps "$static_stage"
+    rm -rf "$static_stage"
+
+    [ "$status" -ne 0 ]
 }
