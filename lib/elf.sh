@@ -34,19 +34,30 @@
 # failed to descend somewhere, `file` itself failed, or `file` reported a
 # file it could not read.
 kicad_find_elf() {
-    local dir=$1 pattern=$2
-    local f desc scratch
-    local pipe_rc=()
+    local scratch rc
 
+    # The scan proper runs in a helper so this wrapper owns the scratch file
+    # outright: one creation, one removal, on every path out of the helper --
+    # including its early returns, which is what a cleanup repeated before
+    # each `return` gets wrong as soon as a new one is added. A `trap ...
+    # RETURN` would express the same intent in one line, but a RETURN trap is
+    # global rather than function-scoped: it survives the return that fires
+    # it and fires again when the *caller* returns, by which point the local
+    # it names is out of scope and `set -u` aborts the run.
     scratch=$(mktemp)
-    # A single cleanup point for every return path below, rather than a
-    # `rm -f "$scratch"` repeated before each one: shellcheck (SC2094) also
-    # flags deleting a file from inside a loop that is still reading from it
-    # via `done <"$scratch"`, even though unlinking an open file is safe on
-    # Linux -- the RETURN trap removes it once, after the loop (and the
-    # function) has actually exited, so the deletion is never in the same
-    # textual pipeline as the read.
-    trap 'rm -f "$scratch"' RETURN
+    kicad_find_elf_scan "$1" "$2" "$scratch"
+    rc=$?
+    rm -f "$scratch"
+    return "$rc"
+}
+
+# Internal: the scan itself, writing its intermediate `file` output to the
+# caller-supplied <scratch> path. Split out only so kicad_find_elf can own
+# that file's lifetime; not part of the interface.
+kicad_find_elf_scan() {
+    local dir=$1 pattern=$2 scratch=$3
+    local f desc
+    local pipe_rc=()
 
     find "$dir" -type f -print0 | xargs -0 -r file -N -0 >"$scratch"
     # Both elements must be captured in this one statement: reading

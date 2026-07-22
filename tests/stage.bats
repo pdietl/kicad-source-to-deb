@@ -146,3 +146,23 @@ teardown() {
     rm -rf "$empty"
     [ "$status" -ne 0 ]
 }
+
+@test "the helpers survive set -u when called the way the build script calls them" {
+    # Regression: build-kicad-deb.sh runs under `set -Eeuo pipefail` and calls
+    # these helpers from inside functions. A scan helper that leaves shell
+    # state behind (a stray RETURN trap naming one of its own locals) is
+    # invisible here -- bats runs tests without `set -u` -- but aborts the
+    # real build at the first return after the scan. Reproduce the caller's
+    # actual shell options rather than trusting the suite's.
+    run bash -c '
+        set -Eeuo pipefail
+        . "$1/lib/elf.sh"
+        . "$1/lib/stage.sh"
+        tree=$2
+        outer() { kicad_strip_tree "$tree" >/dev/null; }
+        outer
+        echo REACHED_END
+    ' _ "$BATS_TEST_DIRNAME/.." "$STAGE"
+    [ "$status" -eq 0 ]
+    [[ $output == *REACHED_END* ]]
+}
