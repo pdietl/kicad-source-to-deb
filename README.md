@@ -17,7 +17,7 @@ the 3D viewer still renders board geometry, just no component bodies.
 ## Usage
 
     sudo apt-get install -y build-essential cmake ninja-build ccache dpkg-dev \
-        git binutils fakeroot bats lintian
+        git binutils fakeroot bats
     pipx install west
 
     git clone https://github.com/pdietl/kicad-source-to-deb.git

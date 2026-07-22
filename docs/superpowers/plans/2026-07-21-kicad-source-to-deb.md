@@ -1156,13 +1156,76 @@ git commit -m "Add build orchestrator producing both deb packages"
 ### Task 7: Migration script and README
 
 **Files:**
-- Create: `uninstall-usr-local.sh`, `README.md`
+- Create: `uninstall-usr-local.sh`, `lib/uninstall.sh`, `tests/uninstall.bats`, `README.md`
 
 **Interfaces:**
-- Consumes: nothing
+- Consumes: `lib/uninstall.sh` (`kicad_uninstall_resolve_under_prefix`)
 - Produces: `uninstall-usr-local.sh`, invoked by `provision` in Task 8.
 
-- [ ] **Step 1: Write `uninstall-usr-local.sh`**
+- [ ] **Step 1: Write `lib/uninstall.sh`**
+
+A manifest is untrusted input processed as root, so the path-containment
+decision is a pure function, factored out so it can be unit-tested against a
+fake tree instead of only ever being exercised by `rm -f` on the real
+filesystem. A raw `case "$f" in /usr/local/*)` text match is defeated by a
+`..` traversal or a symlinked intermediate component; resolving the path
+first with `realpath -m` (which tolerates a target that no longer exists --
+a manifest may list files a previous run already removed) and testing
+containment on the *resolved* form closes both.
+
+```bash
+#!/usr/bin/env bash
+# Decide whether a raw manifest line refers to a path actually contained in a
+# prefix, before uninstall-usr-local.sh acts on it as root.
+#
+# A textual prefix check (`case "$f" in "$prefix"/*)`) is defeated two ways:
+# a ".." traversal embedded in the manifest line (e.g.
+# "$prefix/../../etc/passwd" textually starts with "$prefix/" but resolves
+# elsewhere), and a symlinked intermediate path component. Both are defeated
+# by resolving the path first and testing containment on the resolved form,
+# not the raw text.
+#
+# realpath -m tolerates a target that doesn't exist, which matters here: a
+# manifest may list files a previous run already removed.
+
+# kicad_uninstall_resolve_under_prefix <raw-path> <prefix>
+# On success, prints the canonical form of <raw-path> and returns 0. Returns
+# 1 for a blank input or a path whose canonical form is not <prefix> itself
+# or something under it.
+kicad_uninstall_resolve_under_prefix() {
+    local raw=$1 prefix=$2 resolved
+
+    [ -n "$raw" ] || return 1
+
+    resolved=$(realpath -m -- "$raw") || return 1
+
+    case "$resolved" in
+        "$prefix" | "$prefix"/*)
+            printf '%s\n' "$resolved"
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+```
+
+- [ ] **Step 2: Write `uninstall-usr-local.sh`**
+
+The no-manifest fallback list is derived from `dpkg-deb -c` against the built
+`kicad_*.deb`, not guessed: KiCad's shared libraries land under the Debian
+multiarch subdir (`lib/x86_64-linux-gnu/`), not bare `lib/`, and a
+`/usr/local` build may use either, so both are checked. The fallback also
+covers the seven `*.kiface` plugin modules, the four IDF utilities
+(`dxf2idf`, `idf2vrml`, `idfcyl`, `idfrect`), the `plugins/3d/*.so` tree, and
+the Python bindings (`pcbnew.py`, `_pcbnew.so`) -- all real `/usr/bin` and
+`/usr/lib` entries in the built package that a stale `/usr/local` source
+install would shadow if left behind. `/usr/local/bin` and `/usr/local/lib`
+are shared with other software, so only the specific files KiCad owns are
+removed from them; `share/kicad` and the multiarch/non-multiarch
+`lib/.../kicad` subtrees are directories KiCad owns exclusively and can be
+removed wholesale.
 
 ```bash
 #!/usr/bin/env bash
@@ -1175,6 +1238,11 @@ set -euo pipefail
 # running. This is deliberately NOT done from a maintainer script -- Debian
 # Policy reserves /usr/local for the local administrator.
 
+SCRIPT_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/uninstall.sh
+. "$SCRIPT_DIR/lib/uninstall.sh"
+
+PREFIX=/usr/local
 MANIFEST=${1:-}
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -1182,38 +1250,95 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-if [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ]; then
+if [ -n "$MANIFEST" ]; then
+    if [ ! -r "$MANIFEST" ]; then
+        echo "Error: manifest '$MANIFEST' does not exist or is not readable" >&2
+        exit 1
+    fi
+
     echo "Removing files listed in $MANIFEST"
+    rejected=0
     while IFS= read -r f; do
         [ -n "$f" ] || continue
-        case "$f" in
-        /usr/local/*) rm -f "$f" ;;
-        *) echo "  skipping out-of-prefix path: $f" >&2 ;;
-        esac
-    done < "$MANIFEST"
+        if resolved=$(kicad_uninstall_resolve_under_prefix "$f" "$PREFIX"); then
+            rm -f "$resolved"
+        else
+            echo "  rejecting out-of-prefix path: $f" >&2
+            rejected=1
+        fi
+    done <"$MANIFEST"
+
+    if [ "$rejected" -ne 0 ]; then
+        echo "Error: manifest contained one or more paths outside $PREFIX" >&2
+        exit 1
+    fi
 else
     echo "No install manifest given; removing known /usr/local KiCad paths"
-    rm -rf /usr/local/share/kicad
-    rm -rf /usr/local/lib/kicad
-    rm -f /usr/local/lib/libkicommon.so*
-    rm -f /usr/local/bin/kicad /usr/local/bin/kicad-cli /usr/local/bin/eeschema \
-        /usr/local/bin/pcbnew /usr/local/bin/gerbview /usr/local/bin/pl_editor \
-        /usr/local/bin/pcb_calculator /usr/local/bin/bitmap2component
+
+    rm -rf "$PREFIX/share/kicad"
+
+    # KiCad's shared libraries land under the Debian multiarch subdir
+    # ($PREFIX/lib/x86_64-linux-gnu/), but a bare -DCMAKE_INSTALL_PREFIX
+    # build can also put them straight in $PREFIX/lib -- cover both, and the
+    # kiface plugin/3D-plugin tree each one may carry alongside them.
+    for libdir in "$PREFIX/lib" "$PREFIX/lib/x86_64-linux-gnu"; do
+        [ -d "$libdir" ] || continue
+        rm -f "$libdir"/libkicommon.so* "$libdir"/libkiapi.so* \
+            "$libdir"/libkicad_3dsg.so* "$libdir"/libkigal.so*
+        rm -rf "$libdir/kicad"
+    done
+
+    rm -f "$PREFIX"/bin/kicad "$PREFIX"/bin/kicad-cli "$PREFIX"/bin/eeschema \
+        "$PREFIX"/bin/pcbnew "$PREFIX"/bin/gerbview "$PREFIX"/bin/pl_editor \
+        "$PREFIX"/bin/pcb_calculator "$PREFIX"/bin/bitmap2component \
+        "$PREFIX"/bin/dxf2idf "$PREFIX"/bin/idf2vrml "$PREFIX"/bin/idfcyl \
+        "$PREFIX"/bin/idfrect \
+        "$PREFIX"/bin/_cvpcb.kiface "$PREFIX"/bin/_eeschema.kiface \
+        "$PREFIX"/bin/_gerbview.kiface "$PREFIX"/bin/_kipython.kiface \
+        "$PREFIX"/bin/_pcb_calculator.kiface "$PREFIX"/bin/_pcbnew.kiface \
+        "$PREFIX"/bin/_pl_editor.kiface
+
+    rm -f "$PREFIX"/lib/python3/dist-packages/pcbnew.py \
+        "$PREFIX"/lib/python3/dist-packages/_pcbnew.so
 fi
 
-# Prune now-empty directories without disturbing anything else under /usr/local.
-rmdir --ignore-fail-on-non-empty /usr/local/share/kicad 2> /dev/null || true
+# Prune directories now left empty by the removals above. Restricted to
+# subtrees KiCad owns exclusively and to already-empty results (-empty), so
+# a directory still holding unrelated local files is never touched.
+# $PREFIX/bin and $PREFIX/lib themselves are shared with other software and
+# are never removed here, only the files placed directly in them above.
+for d in "$PREFIX/share/kicad" "$PREFIX/lib/kicad" "$PREFIX/lib/x86_64-linux-gnu/kicad"; do
+    [ -d "$d" ] || continue
+    find "$d" -depth -type d -empty -delete
+done
 
 ldconfig
 echo "Done. /usr/local KiCad removed."
 ```
 
-- [ ] **Step 2: Lint**
+- [ ] **Step 3: Write `tests/uninstall.bats`**
 
-Run: `shellcheck uninstall-usr-local.sh && shfmt -i 4 -ci -d uninstall-usr-local.sh`
+Unit-tests `kicad_uninstall_resolve_under_prefix` as a pure function against
+a fake tree under a temp directory -- never against `/usr/local`. Covers: a
+normal path under the prefix, the prefix itself, a `..` traversal escaping
+the prefix, a path outside the prefix, a blank input, a sibling path that
+merely shares the prefix as a text string (e.g. `/usr/local-evil`, which a
+slash-less `case` match would wrongly accept), a symlinked intermediate
+component that escapes the prefix, and a nonexistent path under the prefix
+(the already-removed-by-a-prior-run case `realpath -m` exists to support).
+
+- [ ] **Step 4: Lint**
+
+Run: `shellcheck uninstall-usr-local.sh lib/uninstall.sh && shfmt -i 4 -ci -d uninstall-usr-local.sh lib/uninstall.sh`
 Expected: no output.
 
-- [ ] **Step 3: Write `README.md`**
+- [ ] **Step 5: Write `README.md`**
+
+`lintian` was dropped from the dependency list and Tests section: nothing in
+this repo invokes it (no build step, no documented command), so listing it
+as a dependency without ever showing its use is misleading. It was a
+one-off manual check during Task 6 development, not a repeatable command
+this repo exposes.
 
 ```markdown
 # kicad-source-to-deb
@@ -1226,7 +1351,7 @@ Companion to [saleae-logic2-appimage-to-deb](https://github.com/pdietl/saleae-lo
 
 | Package | Installed | Contents |
 |---|---|---|
-| `kicad` | ~271 MB | binaries, symbols, footprints, templates, i18n, desktop integration |
+| `kicad` | ~343 MB | binaries, symbols, footprints, templates, i18n, desktop integration |
 | `kicad-packages3d` | ~1.2 GB | STEP models for the 3D viewer and STEP/VRML export |
 
 `kicad-packages3d` is optional. The PCB editor canvas is 2D; without the models
@@ -1235,7 +1360,7 @@ the 3D viewer still renders board geometry, just no component bodies.
 ## Usage
 
     sudo apt-get install -y build-essential cmake ninja-build ccache dpkg-dev \
-        git binutils bats lintian
+        git binutils fakeroot bats
     pipx install west
 
     git clone https://github.com/pdietl/kicad-source-to-deb.git
@@ -1274,15 +1399,18 @@ They are re-seeded against the new prefix on next launch.
     shellcheck *.sh lib/*.sh packaging/kicad.postinst
 ```
 
-- [ ] **Step 4: Verify the tests referenced in the README actually pass**
+- [ ] **Step 6: Verify the tests referenced in the README actually pass**
 
 Run: `bats tests/`
-Expected: `28 tests, 0 failures` across the three test files (14 version, 8 shlibdeps, 6 stage).
+Expected: `36 tests, 0 failures` across the four test files (14 version, 8 shlibdeps,
+6 stage, 8 uninstall).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add uninstall-usr-local.sh README.md
+chmod +x uninstall-usr-local.sh
+git add --chmod=+x uninstall-usr-local.sh
+git add lib/uninstall.sh tests/uninstall.bats README.md
 git commit -m "Add /usr/local migration script and README"
 ```
 
