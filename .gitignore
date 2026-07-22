@@ -1,5 +1,4 @@
-build/
-stage-*/
+work/
 *.deb
 *.buildinfo
 *.changes

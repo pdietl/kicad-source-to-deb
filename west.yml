@@ -1,6 +1,6 @@
 manifest:
   self:
-    path: kicad-source-to-deb
+    path: manifest
 
   remotes:
     - name: kicad

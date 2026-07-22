@@ -7,7 +7,8 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 SCRIPT_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-WORKSPACE=$(cd -P "$SCRIPT_DIR/.." && pwd)
+mkdir -p "$SCRIPT_DIR/work"
+WORKSPACE=$(cd -P "$SCRIPT_DIR/work" && pwd)
 ORIG_DIR=$(pwd)
 
 # shellcheck source=lib/version.sh
@@ -51,17 +52,17 @@ fi
 # reports, and any state a prior run left behind there can break a later run
 # in a way whose error points at the source checkout instead of the real
 # cause. Give the script a build area of its own, outside every checkout.
-LIB_BUILD_ROOT="$WORKSPACE/.build"
+LIB_BUILD_ROOT="$WORKSPACE/lib-build"
 mkdir -p "$LIB_BUILD_ROOT"
 
 # /tmp on this machine is tmpfs (RAM-backed). Staging holds the full KiCad
 # install plus several GB of 3D models, and dpkg-deb needs scratch space
 # again on top of that while assembling control.tar/data.tar -- both stages
 # honor TMPDIR (mktemp(1), dpkg-deb(1)). Point everything at disk instead,
-# next to the library build dirs.
-export TMPDIR="$LIB_BUILD_ROOT"
-STAGE_KICAD=$(mktemp -d -p "$LIB_BUILD_ROOT" stage-kicad-XXXXXX)
-STAGE_3D=$(mktemp -d -p "$LIB_BUILD_ROOT" stage-3d-XXXXXX)
+# under work/.
+export TMPDIR="$WORKSPACE"
+STAGE_KICAD=$(mktemp -d -p "$WORKSPACE" stage-kicad-XXXXXX)
+STAGE_3D=$(mktemp -d -p "$WORKSPACE" stage-3d-XXXXXX)
 # mktemp -d makes these mode 0700. dpkg-deb -x later chmods the extraction
 # destination to match the archive's own "./" entry, so a 0700 staging root
 # would make every install of this package unreadable to non-root users.
@@ -99,6 +100,22 @@ cleanup() {
     exit "$exit_code"
 }
 trap cleanup EXIT
+
+stage "Bootstrapping workspace"
+# `west init -l <dir>` makes the workspace topdir the PARENT of <dir>, so to
+# get topdir == work/, the manifest repo has to live one level inside it.
+# The symlink is recreated every run rather than trusted to persist, so it
+# can never drift from the manifest actually tracked in git.
+mkdir -p "$WORKSPACE/manifest"
+ln -sfn "../../west.yml" "$WORKSPACE/manifest/west.yml"
+if [ ! -d "$WORKSPACE/manifest/.git" ]; then
+    git -C "$WORKSPACE/manifest" init -q
+fi
+# west init errors if the workspace is already initialized, so only run it
+# once; a second invocation of this script must be a no-op here.
+if [ ! -d "$WORKSPACE/.west" ]; then
+    (cd "$WORKSPACE" && west init -l manifest)
+fi
 
 stage "Syncing repositories"
 (cd "$WORKSPACE" && west update)

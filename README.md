@@ -33,19 +33,22 @@ and packaging tooling:
     pipx install west
 
     git clone https://github.com/pdietl/kicad-source-to-deb.git
-    west init -l kicad-source-to-deb
-    west update
-
     cd kicad-source-to-deb
     ./build-kicad-deb.sh
 
+The script bootstraps its own west workspace under `work/` on first run --
+no separate `west init`/`west update` step is needed first.
+
 The build takes 30-50 minutes and needs roughly 25 GB of scratch space.
+`work/` is scratch: delete it any time to force a clean rebuild from fresh
+checkouts.
 
     sudo apt install ./kicad_*.deb ./kicad-packages3d_*.deb
 
 ## Upgrading to a new KiCad release
 
-Edit the five `revision:` values in `west.yml`, then `west update` and rebuild.
+Edit the five `revision:` values in `west.yml`, then rerun `./build-kicad-deb.sh` --
+it syncs the workspace to the new revisions before building.
 
 ## Migrating from a /usr/local source install
 

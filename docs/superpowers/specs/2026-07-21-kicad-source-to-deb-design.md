@@ -38,28 +38,41 @@ checkout to installable packages.
 
 ## Layout
 
-West places its `.west/` directory in the workspace root, one level above this repo:
+This repo is standalone: it has no parent west workspace, and none is assumed. The build script
+owns and bootstraps its own workspace in a gitignored `work/` directory inside the repo:
 
 ```
-kicad-workspace/
-├── .west/
-├── kicad-source-to-deb/          this repo (west manifest repo)
-│   ├── west.yml
-│   ├── build-kicad-deb.sh
-│   ├── uninstall-usr-local.sh
-│   ├── packaging/
-│   │   ├── kicad.control.in
-│   │   ├── kicad.postinst
-│   │   ├── kicad.triggers
-│   │   └── kicad-packages3d.control.in
-│   ├── README.md
-│   └── .gitignore
-├── kicad/
-├── kicad-symbols/
-├── kicad-footprints/
-├── kicad-templates/
-└── kicad-packages3D/
+kicad-source-to-deb/               this repo
+├── west.yml                       canonical manifest, tracked in git
+├── build-kicad-deb.sh
+├── uninstall-usr-local.sh
+├── packaging/
+│   ├── kicad.control.in
+│   ├── kicad.postinst
+│   ├── kicad.triggers
+│   └── kicad-packages3d.control.in
+├── README.md
+├── .gitignore
+└── work/                          gitignored; the west topdir
+    ├── .west/                     created by `west init -l manifest`
+    ├── manifest/
+    │   └── west.yml                symlink -> ../../west.yml
+    ├── kicad/                     } west-managed checkouts
+    ├── kicad-symbols/             }
+    ├── kicad-footprints/          }
+    ├── kicad-templates/           }
+    ├── kicad-packages3D/          }
+    ├── build/                     main KiCad cmake build tree
+    ├── lib-build/<name>/          per-library cmake build dirs
+    └── stage-*/                   staging trees
 ```
+
+`west init -l <dir>` makes the workspace topdir the *parent* of `<dir>`, so to get topdir ==
+`work/`, the manifest repo has to live one level inside it -- hence `work/manifest/`, a plain git
+repo whose only file is a symlink to the repo-root `west.yml`. That symlink is recreated on every
+run rather than trusted to persist, so there is exactly one manifest and it cannot drift out of
+sync with the one tracked in git. `work/` can be deleted at any time to force a clean rebuild from
+fresh checkouts.
 
 ## west.yml
 
@@ -120,11 +133,14 @@ invocation directory.
    first compile, `fakeroot` only at packaging time -- so a missing one would otherwise burn most
    of a 30-50 minute build before surfacing. Fail with the apt command that supplies anything
    missing.
-2. **Sync.** `west update`. The workspace must already be initialised (`west init -l`); README and
-   `provision` do that once, before this script ever runs.
+2. **Bootstrap and sync.** The workspace is not assumed to exist. Create `work/manifest/`,
+   (re)create the `work/manifest/west.yml` symlink, `git init` the manifest repo if not already
+   one, and run `west init -l manifest` from inside `work/` only when `work/.west` is absent --
+   a second run of the script must find the workspace already initialised and skip straight to
+   `west update`.
 3. **Configure.**
    ```
-   cmake -S ../kicad -B build -G Ninja \
+   cmake -S work/kicad -B work/build -G Ninja \
        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
        -DCMAKE_INSTALL_PREFIX=/usr \
        -DDEFAULT_INSTALL_PATH=/usr \
@@ -220,7 +236,7 @@ dpkg reads `-` as the separator between upstream version and Debian revision, so
 **downgrade**, which `apt upgrade` refuses. `~` sorts before everything, giving the required
 `10.0.5~rc1-1 < 10.0.5-1`.
 
-The script derives the upstream version from `git -C ../kicad describe --tags` and replaces the
+The script derives the upstream version from `git -C work/kicad describe --tags` and replaces the
 first `-` with `~` only when the suffix is a pre-release marker (`rc`, `beta`, `alpha`).
 
 ### Dependencies

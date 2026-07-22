@@ -50,7 +50,10 @@
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: a west workspace where `../kicad`, `../kicad-symbols`, `../kicad-footprints`, `../kicad-templates`, `../kicad-packages3D` exist at tag `10.0.5-rc1`.
+- Produces: a west workspace, self-bootstrapped by `build-kicad-deb.sh` (Task 6) under the
+  gitignored `work/` directory, where `work/kicad`, `work/kicad-symbols`,
+  `work/kicad-footprints`, `work/kicad-templates`, `work/kicad-packages3D` exist at tag
+  `10.0.5-rc1`.
 
 - [ ] **Step 1: Install the tooling this plan needs**
 
@@ -69,7 +72,7 @@ Expected: a version string such as `West version: v1.x.y`. If `command not found
 ```yaml
 manifest:
   self:
-    path: kicad-source-to-deb
+    path: manifest
 
   remotes:
     - name: kicad
@@ -109,12 +112,15 @@ manifest:
 - [ ] **Step 4: Write `.gitignore`**
 
 ```
-build/
-stage-*/
+work/
 *.deb
 *.buildinfo
 *.changes
 ```
+
+`work/` covers everything the build produces in-tree -- the west checkouts, the cmake build
+trees and the staging directories all live under it, so there is nothing left for separate
+`build/`/`stage-*/` entries to guard.
 
 - [ ] **Step 5: Validate the manifest parses**
 
@@ -128,13 +134,22 @@ Expected: five lines, each URL under `https://gitlab.com/kicad/`, each revision 
 
 - [ ] **Step 7: Materialize the workspace**
 
+`build-kicad-deb.sh` (Task 6) does this itself on every run, so this step just exercises the
+same sequence by hand to validate the manifest before the orchestrator exists:
+
 ```bash
-cd ..
-west init -l kicad-source-to-deb
-west update
+mkdir -p work/manifest
+ln -sfn ../../west.yml work/manifest/west.yml
+git -C work/manifest init -q
+(cd work && west init -l manifest && west update)
 ```
 
-Expected: five sibling directories appear. `kicad-packages3D` is the slow one (~hundreds of MB).
+`west init -l <dir>` makes the workspace topdir the *parent* of `<dir>`, so putting the manifest
+repo at `work/manifest` makes `work/` itself the topdir -- confirm with `west topdir` from
+inside `work/`, expected `<repo>/work`.
+
+Expected: `work/kicad`, `work/kicad-symbols`, `work/kicad-footprints`, `work/kicad-templates`,
+`work/kicad-packages3D` appear. `kicad-packages3D` is the slow one (~hundreds of MB).
 
 **If `west update` fails to resolve a tag on a shallow clone**, remove the `clone-depth: 1` line from the failing project and re-run. This interaction is untested upstream; the cost of dropping it is clone time, not correctness.
 
@@ -142,7 +157,7 @@ Expected: five sibling directories appear. `kicad-packages3D` is the slow one (~
 
 ```bash
 for d in kicad kicad-symbols kicad-footprints kicad-templates kicad-packages3D; do
-    printf '%-20s %s\n' "$d" "$(git -C "$d" describe --tags 2>/dev/null)"
+    printf '%-20s %s\n' "$d" "$(git -C "work/$d" describe --tags 2>/dev/null)"
 done
 ```
 
@@ -918,7 +933,8 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 SCRIPT_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-WORKSPACE=$(cd -P "$SCRIPT_DIR/.." && pwd)
+mkdir -p "$SCRIPT_DIR/work"
+WORKSPACE=$(cd -P "$SCRIPT_DIR/work" && pwd)
 ORIG_DIR=$(pwd)
 
 # shellcheck source=lib/version.sh
@@ -956,17 +972,17 @@ fi
 # reports, and any state a prior run left behind there can break a later run
 # in a way whose error points at the source checkout instead of the real
 # cause. Give the script a build area of its own, outside every checkout.
-LIB_BUILD_ROOT="$WORKSPACE/.build"
+LIB_BUILD_ROOT="$WORKSPACE/lib-build"
 mkdir -p "$LIB_BUILD_ROOT"
 
 # /tmp on this machine is tmpfs (RAM-backed). Staging holds the full KiCad
 # install plus several GB of 3D models, and dpkg-deb needs scratch space
 # again on top of that while assembling control.tar/data.tar -- both stages
 # honor TMPDIR (mktemp(1), dpkg-deb(1)). Point everything at disk instead,
-# next to the library build dirs.
-export TMPDIR="$LIB_BUILD_ROOT"
-STAGE_KICAD=$(mktemp -d -p "$LIB_BUILD_ROOT" stage-kicad-XXXXXX)
-STAGE_3D=$(mktemp -d -p "$LIB_BUILD_ROOT" stage-3d-XXXXXX)
+# under work/.
+export TMPDIR="$WORKSPACE"
+STAGE_KICAD=$(mktemp -d -p "$WORKSPACE" stage-kicad-XXXXXX)
+STAGE_3D=$(mktemp -d -p "$WORKSPACE" stage-3d-XXXXXX)
 
 CURRENT_STAGE="initializing"
 stage() {
@@ -1000,6 +1016,22 @@ cleanup() {
     exit "$exit_code"
 }
 trap cleanup EXIT
+
+stage "Bootstrapping workspace"
+# `west init -l <dir>` makes the workspace topdir the PARENT of <dir>, so to
+# get topdir == work/, the manifest repo has to live one level inside it.
+# The symlink is recreated every run rather than trusted to persist, so it
+# can never drift from the manifest actually tracked in git.
+mkdir -p "$WORKSPACE/manifest"
+ln -sfn "../../west.yml" "$WORKSPACE/manifest/west.yml"
+if [ ! -d "$WORKSPACE/manifest/.git" ]; then
+    git -C "$WORKSPACE/manifest" init -q
+fi
+# west init errors if the workspace is already initialized, so only run it
+# once; a second invocation of this script must be a no-op here.
+if [ ! -d "$WORKSPACE/.west" ]; then
+    (cd "$WORKSPACE" && west init -l manifest)
+fi
 
 stage "Syncing repositories"
 (cd "$WORKSPACE" && west update)
