@@ -16,8 +16,20 @@ the 3D viewer still renders board geometry, just no component bodies.
 
 ## Usage
 
+KiCad's own build dependencies (from upstream's `install-deps.sh`), plus this repo's build
+and packaging tooling:
+
     sudo apt-get install -y build-essential cmake ninja-build ccache dpkg-dev \
-        git binutils fakeroot bats shellcheck
+        git binutils fakeroot bats shellcheck \
+        libwxgtk3.2-dev libwxgtk-webview3.2-dev libocct-foundation-dev \
+        libocct-data-exchange-dev libocct-modeling-algorithms-dev \
+        libocct-modeling-data-dev libocct-visualization-dev libocct-ocaf-dev \
+        swig python3-dev python3-wxgtk4.0 libglm-dev libgit2-dev \
+        libsecret-1-dev libcurl4-openssl-dev libngspice0-dev libnng-dev \
+        libboost-all-dev libcairo2-dev libglu1-mesa-dev libgl1-mesa-dev \
+        libprotobuf-dev protobuf-compiler gettext unixodbc-dev libspnav-dev \
+        libzint-dev libpoppler-dev libpoppler-glib-dev zlib1g-dev libssl-dev \
+        libzstd-dev libbz2-dev shared-mime-info
     pipx install west
 
     git clone https://github.com/pdietl/kicad-source-to-deb.git
@@ -54,3 +66,4 @@ They are re-seeded against the new prefix on next launch.
 
     bats tests/
     shellcheck *.sh lib/*.sh packaging/kicad.postinst
+    shfmt -i 4 -ci -d *.sh lib/*.sh

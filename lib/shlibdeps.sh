@@ -18,7 +18,7 @@
 
 kicad_shlibdeps() {
     local stage=$1
-    local workdir out err rc f
+    local workdir out err rc f list
     local elves=()
 
     if [ ! -d "$stage" ]; then
@@ -26,9 +26,23 @@ kicad_shlibdeps() {
         return 1
     fi
 
+    # A plain redirected call, not `< <(kicad_find_elf ...)`: a process
+    # substitution's exit status is unobservable here, which is exactly the
+    # bug class this scan already paid for once (see lib/elf.sh) -- a
+    # partial enumeration must fail the whole dependency computation, not
+    # silently compute Depends: from fewer ELF files than the tree actually
+    # contains.
+    list=$(mktemp)
+    if ! kicad_find_elf "$stage" '*ELF*' >"$list"; then
+        echo "kicad_shlibdeps: ELF enumeration under $stage failed" >&2
+        rm -f "$list"
+        return 1
+    fi
+
     while IFS= read -r -d '' f; do
         elves+=("$f")
-    done < <(kicad_find_elf "$stage" '*ELF*')
+    done <"$list"
+    rm -f "$list"
 
     if [ ${#elves[@]} -eq 0 ]; then
         echo "kicad_shlibdeps: no ELF files found under $stage" >&2

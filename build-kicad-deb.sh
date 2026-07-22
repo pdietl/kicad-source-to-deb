@@ -23,11 +23,17 @@ echo -e "${GREEN}KiCad source-to-deb builder${NC}"
 echo "================================"
 
 echo -e "${YELLOW}Checking dependencies...${NC}"
-for tool in west cmake ninja g++ dpkg-deb dpkg-shlibdeps git strip file; do
+# ccache and fakeroot are both used well after this preflight -- ccache from
+# the very first compile ("Configuring KiCad" wires it in via
+# CMAKE_*_COMPILER_LAUNCHER but the failure surfaces at first compile,
+# 30-50 minutes in), fakeroot only at packaging time in build_package(). A
+# missing tool discovered at either point burns the whole build for
+# something this loop already checks everything else for.
+for tool in west cmake ninja g++ dpkg-deb dpkg-shlibdeps git strip file fakeroot ccache; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo -e "${RED}Error: $tool is not installed${NC}"
         echo "Install build tooling with: sudo apt-get install -y \\"
-        echo "    build-essential cmake ninja-build ccache dpkg-dev git binutils"
+        echo "    build-essential cmake ninja-build ccache dpkg-dev git binutils fakeroot"
         echo "and west with: pipx install west"
         exit 1
     fi
@@ -56,6 +62,10 @@ mkdir -p "$LIB_BUILD_ROOT"
 export TMPDIR="$LIB_BUILD_ROOT"
 STAGE_KICAD=$(mktemp -d -p "$LIB_BUILD_ROOT" stage-kicad-XXXXXX)
 STAGE_3D=$(mktemp -d -p "$LIB_BUILD_ROOT" stage-3d-XXXXXX)
+# mktemp -d makes these mode 0700. dpkg-deb -x later chmods the extraction
+# destination to match the archive's own "./" entry, so a 0700 staging root
+# would make every install of this package unreadable to non-root users.
+chmod 0755 "$STAGE_KICAD" "$STAGE_3D"
 
 CURRENT_STAGE="initializing"
 stage() {
@@ -113,6 +123,11 @@ cmake --build "$WORKSPACE/build" -j"$(nproc)"
 
 stage "Staging KiCad"
 DESTDIR=$STAGE_KICAD cmake --install "$WORKSPACE/build"
+# Thresholds are well below a real install (thousands of files) and well
+# above zero -- see the comment on kicad_assert_min_files for why a bare
+# non-empty check does not catch an install that silently produced almost
+# nothing.
+kicad_assert_min_files "$STAGE_KICAD/usr" 200 "kicad main install"
 
 # Symbols ship as unpacked .kicad_symdir directories; packing is off to match
 # what the official build installs.
@@ -120,6 +135,7 @@ stage "Staging kicad-symbols"
 cmake -S "$WORKSPACE/kicad-symbols" -B "$LIB_BUILD_ROOT/kicad-symbols" -G Ninja \
     -DCMAKE_INSTALL_PREFIX=/usr -DKICAD_PACK_SYM_LIBRARIES=OFF
 DESTDIR=$STAGE_KICAD cmake --install "$LIB_BUILD_ROOT/kicad-symbols"
+kicad_assert_min_files "$STAGE_KICAD/usr/share/kicad/symbols" 1000 "kicad-symbols"
 
 for lib in kicad-footprints kicad-templates; do
     stage "Staging $lib"
@@ -127,6 +143,8 @@ for lib in kicad-footprints kicad-templates; do
         -DCMAKE_INSTALL_PREFIX=/usr
     DESTDIR=$STAGE_KICAD cmake --install "$LIB_BUILD_ROOT/$lib"
 done
+kicad_assert_min_files "$STAGE_KICAD/usr/share/kicad/footprints" 1000 "kicad-footprints"
+kicad_assert_min_files "$STAGE_KICAD/usr/share/kicad/template" 20 "kicad-templates"
 
 # The models go straight into their own tree: this repo's CMake installs only
 # the shape directories, so no post-hoc move is needed.
@@ -134,6 +152,7 @@ stage "Staging 3D models"
 cmake -S "$WORKSPACE/kicad-packages3D" -B "$LIB_BUILD_ROOT/kicad-packages3D" \
     -G Ninja -DCMAKE_INSTALL_PREFIX=/usr
 DESTDIR=$STAGE_3D cmake --install "$LIB_BUILD_ROOT/kicad-packages3D"
+kicad_assert_min_files "$STAGE_3D/usr/share/kicad/3dmodels" 1000 "kicad-packages3d"
 
 if [ -e "$STAGE_KICAD/usr/share/kicad/3dmodels" ]; then
     echo -e "${RED}Error: 3D models leaked into the main package tree${NC}"
@@ -163,6 +182,19 @@ build_package() {
     control=${control//@VERSION@/$VERSION}
     control=${control//@INSTALLED_SIZE@/$size}
     control=${control//@DEPENDS@/$DEPENDS}
+
+    # dpkg-deb --build catches an unsubstituted @VERSION@ or @DEPENDS@ on its
+    # own -- both land in a field dpkg validates (a bad package name/version,
+    # a malformed dependency). @INSTALLED_SIZE@ lands in a field dpkg does
+    # not validate the syntax of, so a template gaining a new placeholder
+    # this script forgets to substitute would otherwise build successfully
+    # with the literal text "@INSTALLED_SIZE@" shipped as the size.
+    if [[ $control == *@*@* ]]; then
+        echo -e "${RED}Error: unsubstituted @..@ placeholder remains in" \
+            "$name control file${NC}" >&2
+        exit 1
+    fi
+
     printf '%s\n' "$control" >"$pkgdir/control"
 
     # Only the kicad package has these; the models package is pure data and

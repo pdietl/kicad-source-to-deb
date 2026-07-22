@@ -27,18 +27,7 @@ if [ -n "$MANIFEST" ]; then
     fi
 
     echo "Removing files listed in $MANIFEST"
-    rejected=0
-    while IFS= read -r f || [ -n "$f" ]; do
-        [ -n "$f" ] || continue
-        if resolved=$(kicad_uninstall_resolve_under_prefix "$f" "$PREFIX"); then
-            rm -f "$resolved"
-        else
-            echo "  rejecting out-of-prefix path: $f" >&2
-            rejected=1
-        fi
-    done <"$MANIFEST"
-
-    if [ "$rejected" -ne 0 ]; then
+    if ! kicad_uninstall_process_manifest "$MANIFEST" "$PREFIX"; then
         echo "Error: manifest contained one or more paths outside $PREFIX" >&2
         exit 1
     fi

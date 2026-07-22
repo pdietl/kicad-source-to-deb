@@ -72,3 +72,77 @@ teardown() {
     after=$(stat -c %s "$STAGE/usr/bin/kicad:helper")
     [ "$after" -lt "$before" ]
 }
+
+@test "an unreadable subdirectory fails the whole scan instead of silently stripping fewer files" {
+    # A stage tree `find` cannot fully descend must not report success with
+    # a partial count -- that is a .deb silently missing whatever lived
+    # behind the unreadable directory.
+    mkdir -p "$STAGE/usr/lib/secret"
+    printf 'int f(void){return 0;}\n' >"$STAGE/s.c"
+    gcc -g -shared -o "$STAGE/usr/lib/secret/hidden.so" "$STAGE/s.c"
+    chmod 000 "$STAGE/usr/lib/secret"
+    run kicad_strip_tree "$STAGE"
+    chmod 755 "$STAGE/usr/lib/secret"
+    [ "$status" -ne 0 ]
+}
+
+@test "an unreadable ELF file fails the scan instead of being silently skipped" {
+    # `file` exits 0 even for a file it cannot read, describing it as
+    # "regular file, no read permission" -- that description matches
+    # neither '*ELF*' pattern, so the file would otherwise vanish from the
+    # count with no error at all.
+    printf 'int main(void){return 0;}\n' >"$STAGE/n.c"
+    gcc -g -o "$STAGE/usr/bin/secretbin" "$STAGE/n.c"
+    chmod 000 "$STAGE/usr/bin/secretbin"
+    run kicad_strip_tree "$STAGE"
+    chmod 644 "$STAGE/usr/bin/secretbin"
+    [ "$status" -ne 0 ]
+}
+
+@test "kicad_assert_min_files accepts a tree meeting the minimum" {
+    mkdir -p "$STAGE/usr/share/kicad/3dmodels/R.3dshapes"
+    for i in 1 2 3; do
+        echo model >"$STAGE/usr/share/kicad/3dmodels/R.3dshapes/$i.step"
+    done
+    run kicad_assert_min_files "$STAGE/usr/share/kicad/3dmodels" 3 "test"
+    [ "$status" -eq 0 ]
+}
+
+@test "kicad_assert_min_files rejects an empty tree that dpkg-deb would happily package" {
+    # Reproduces the defect verbatim: a stage tree holding only an empty
+    # directory builds into a valid, useless .deb with Installed-Size: 0 and
+    # rc=0 throughout -- nothing upstream of this check would ever notice.
+    empty3d=$(mktemp -d)
+    mkdir -p "$empty3d/usr/share/kicad/3dmodels"
+    run kicad_assert_min_files "$empty3d/usr/share/kicad/3dmodels" 1000 "kicad-packages3d"
+    rm -rf "$empty3d"
+    [ "$status" -ne 0 ]
+}
+
+@test "kicad_assert_min_files rejects a tree with a few stray files, not just a totally empty one" {
+    # A bare non-empty check (`[ -n "$(ls -A "$dir")" ]`) would pass this;
+    # the point of a real minimum is that it would not.
+    sparse=$(mktemp -d)
+    mkdir -p "$sparse/usr/share/kicad/symbols"
+    touch "$sparse/usr/share/kicad/symbols/Stray.kicad_sym"
+    run kicad_assert_min_files "$sparse/usr/share/kicad/symbols" 1000 "kicad-symbols"
+    rm -rf "$sparse"
+    [ "$status" -ne 0 ]
+}
+
+@test "kicad_assert_min_files rejects a missing directory" {
+    run kicad_assert_min_files "$STAGE/does-not-exist" 1 "test"
+    [ "$status" -ne 0 ]
+}
+
+@test "a tree with no ELF files at all is rejected, not reported as zero stripped" {
+    # count==0 must be indistinguishable from neither "an honestly ELF-free
+    # tree" nor "the scan quietly failed" -- both are suspicious for a
+    # staged KiCad tree, so both are fatal, matching kicad_shlibdeps.
+    empty=$(mktemp -d)
+    mkdir -p "$empty/usr/share/doc"
+    echo "not an ELF file" >"$empty/usr/share/doc/readme.txt"
+    run kicad_strip_tree "$empty"
+    rm -rf "$empty"
+    [ "$status" -ne 0 ]
+}

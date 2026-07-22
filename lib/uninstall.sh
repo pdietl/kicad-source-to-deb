@@ -34,6 +34,39 @@ kicad_uninstall_resolve_under_prefix() {
     esac
 }
 
+# kicad_uninstall_process_manifest <manifest> <prefix>
+#
+# Removes every path listed in <manifest> that resolves under <prefix>,
+# via kicad_uninstall_resolve_under_prefix. Lives here rather than inline in
+# uninstall-usr-local.sh so it is one function, exercised the same way by
+# the real script and by the test suite -- a bats test that instead pastes
+# a copy of this loop into `bash -c` tests the copy, not the script, and
+# stops catching a regression here the moment the two drift.
+#
+# `while IFS= read -r f; do` alone silently drops a manifest's final line
+# when it lacks a trailing newline: `read` returns non-zero at EOF even
+# though it already populated $f. `|| [ -n "$f" ]` catches that last line
+# too.
+#
+# The caller is responsible for confirming <manifest> is readable first.
+# Returns 1 if any line resolved outside <prefix>; blank lines are skipped.
+kicad_uninstall_process_manifest() {
+    local manifest=$1 prefix=$2
+    local f resolved rejected=0
+
+    while IFS= read -r f || [ -n "$f" ]; do
+        [ -n "$f" ] || continue
+        if resolved=$(kicad_uninstall_resolve_under_prefix "$f" "$prefix"); then
+            rm -f "$resolved"
+        else
+            echo "  rejecting out-of-prefix path: $f" >&2
+            rejected=1
+        fi
+    done <"$manifest"
+
+    [ "$rejected" -eq 0 ]
+}
+
 # kicad_uninstall_remove_desktop_integration <prefix>
 #
 # PATH shadowing isn't the only way a source install under <prefix> outlives

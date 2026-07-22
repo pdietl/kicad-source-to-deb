@@ -90,6 +90,18 @@ SHIM
     [ "$status" -ne 0 ]
 }
 
+@test "an unreadable subdirectory fails the scan instead of computing Depends: from a partial tree" {
+    # Same shared-enumerator defect as lib/stage.sh: a directory `find`
+    # cannot descend into must not make kicad_shlibdeps compute Depends:
+    # from fewer ELF files than the stage tree actually contains.
+    mkdir -p "$STAGE/usr/lib/secret"
+    cp /bin/ls "$STAGE/usr/lib/secret/hidden"
+    chmod 000 "$STAGE/usr/lib/secret"
+    run kicad_shlibdeps "$STAGE"
+    chmod 755 "$STAGE/usr/lib/secret"
+    [ "$status" -ne 0 ]
+}
+
 @test "a statically-linked ELF with no NEEDED entries fails rather than emitting empty deps" {
     static_stage=$(mktemp -d)
     mkdir -p "$static_stage/usr/bin"

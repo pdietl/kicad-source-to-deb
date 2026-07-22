@@ -7,7 +7,7 @@ Installed-Size: @INSTALLED_SIZE@
 Depends: @DEPENDS@
 Recommends: kicad-packages3d
 Conflicts: kicad-symbols, kicad-footprints, kicad-templates
-Provides: kicad-symbols, kicad-footprints, kicad-templates
+Provides: kicad-symbols (= @VERSION@), kicad-footprints (= @VERSION@), kicad-templates (= @VERSION@)
 Replaces: kicad-symbols, kicad-footprints, kicad-templates
 Maintainer: Pete Dietl <petedietl@gmail.com>
 Homepage: https://www.kicad.org

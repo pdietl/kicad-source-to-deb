@@ -64,8 +64,12 @@ teardown() {
 @test "a manifest's final line without trailing newline is still processed" {
     # The standard shell gotcha: `while IFS= read -r f; do ... done <file`
     # skips the final line if it lacks a trailing newline because read returns
-    # non-zero on EOF even though it populated $f. This test ensures the fix
-    # (`while IFS= read -r f || [ -n "$f" ]; do`) actually works.
+    # non-zero on EOF even though it populated $f. This calls
+    # kicad_uninstall_process_manifest -- the same function
+    # uninstall-usr-local.sh itself calls for its manifest branch -- rather
+    # than a pasted copy of its loop, so reverting the real fix
+    # (`while IFS= read -r f || [ -n "$f" ]; do`) in lib/uninstall.sh fails
+    # this test instead of leaving it passing against a stale copy.
     manifest=$(mktemp)
     # Use printf (not echo) to avoid adding a trailing newline
     printf '%s\n%s' "$PREFIX/bin/existing1" "$PREFIX/bin/final-no-newline" >"$manifest"
@@ -74,20 +78,7 @@ teardown() {
     mkdir -p "$PREFIX/bin"
     touch "$PREFIX/bin/existing1" "$PREFIX/bin/final-no-newline"
 
-    # Run the uninstall script with the manifest
-    run bash -c "
-        . lib/uninstall.sh
-        rejected=0
-        while IFS= read -r f || [ -n \"\$f\" ]; do
-            [ -n \"\$f\" ] || continue
-            if resolved=\$(kicad_uninstall_resolve_under_prefix \"\$f\" \"$PREFIX\"); then
-                rm -f \"\$resolved\"
-            else
-                rejected=1
-            fi
-        done <\"$manifest\"
-        exit \$rejected
-    "
+    run kicad_uninstall_process_manifest "$manifest" "$PREFIX"
 
     [ "$status" -eq 0 ]
     # Both files should be gone
@@ -95,6 +86,23 @@ teardown() {
     [ ! -e "$PREFIX/bin/final-no-newline" ]
 
     rm -f "$manifest"
+}
+
+@test "a manifest containing a rejected path is reported and processing continues" {
+    manifest=$(mktemp)
+    mkdir -p "$PREFIX/bin"
+    touch "$PREFIX/bin/keep-me-too"
+    OUTSIDE=$(mktemp -d)
+    printf '%s\n%s\n' "$OUTSIDE/etc/passwd" "$PREFIX/bin/keep-me-too" >"$manifest"
+
+    run kicad_uninstall_process_manifest "$manifest" "$PREFIX"
+
+    [ "$status" -ne 0 ]
+    # The in-prefix entry after the rejected one is still processed.
+    [ ! -e "$PREFIX/bin/keep-me-too" ]
+
+    rm -f "$manifest"
+    rm -rf "$OUTSIDE"
 }
 
 @test "desktop-integration removal is a no-op without error on an empty prefix" {

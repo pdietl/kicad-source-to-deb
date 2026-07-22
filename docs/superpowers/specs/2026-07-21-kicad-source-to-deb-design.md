@@ -20,7 +20,7 @@ checkout to installable packages.
 | Decision | Choice | Why |
 |---|---|---|
 | Multi-repo tool | `west` | Per-project `clone-depth` and tag `revision`; manifest lives in this repo via `self`. Pins stay data, not logic. |
-| Package split | Two debs | `kicad` (~271 MB installed) and `kicad-packages3d` (1.2 GB installed). Lets a machine skip the models. |
+| Package split | Two debs | `kicad` (~343 MB installed) and `kicad-packages3d` (1.2 GB installed). Lets a machine skip the models. |
 | Debug info | Stripped | 94% of binary size. Matches the official build, which strips and serves symbols via debuginfod. |
 | Demos | Excluded | `KICAD_INSTALL_DEMOS=OFF`. 151 MB of sample projects. |
 | Install prefix | `/usr` | Matches the official builder. Debian Policy forbids packages writing to `/usr/local`. |
@@ -50,10 +50,8 @@ kicad-workspace/
 │   ├── packaging/
 │   │   ├── kicad.control.in
 │   │   ├── kicad.postinst
-│   │   ├── kicad.postrm
-│   │   ├── kicad-packages3d.control.in
-│   │   ├── kicad-packages3d.postinst
-│   │   └── kicad-packages3d.postrm
+│   │   ├── kicad.triggers
+│   │   └── kicad-packages3d.control.in
 │   ├── README.md
 │   └── .gitignore
 ├── kicad/
@@ -117,9 +115,13 @@ Conventions follow `saleae-logic2-appimage-to-deb`: `set -euo pipefail`, colour 
 preflight loop, `mktemp -d` staging with `trap cleanup EXIT`, finished `.deb` files left in the
 invocation directory.
 
-1. **Preflight.** Require `west cmake ninja g++ dpkg-deb dpkg-shlibdeps git`. Fail with the apt
-   command that supplies anything missing.
-2. **Sync.** `west init -l` if the workspace is not yet initialised, then `west update`.
+1. **Preflight.** Require `west cmake ninja g++ dpkg-deb dpkg-shlibdeps git strip file fakeroot
+   ccache`. `fakeroot` and `ccache` are both used well after this preflight -- `ccache` from the
+   first compile, `fakeroot` only at packaging time -- so a missing one would otherwise burn most
+   of a 30-50 minute build before surfacing. Fail with the apt command that supplies anything
+   missing.
+2. **Sync.** `west update`. The workspace must already be initialised (`west init -l`); README and
+   `provision` do that once, before this script ever runs.
 3. **Configure.**
    ```
    cmake -S ../kicad -B build -G Ninja \
@@ -185,14 +187,15 @@ required, minimum 7.5.0), `KICAD_SPICE`, `KICAD_USE_EGL`, `KICAD_USE_3DCONNEXION
 | | `kicad` | `kicad-packages3d` |
 |---|---|---|
 | Contents | binaries, shared libs, symbols, footprints, templates, i18n, desktop/icon/MIME data | `/usr/share/kicad/3dmodels` only |
-| Installed | ~271 MB (stripped) | ~1.2 GB |
+| Installed | ~343 MB (stripped) | ~1.2 GB |
 | Compressed | not yet measured | ~115 MB (from a 10.7:1 sample) |
 | Depends | computed, see below | `kicad (= <exact version>)` |
 | Recommends | `kicad-packages3d` | — |
-| Conflicts/Provides/Replaces | `kicad-symbols`, `kicad-footprints`, `kicad-templates` | — |
+| Conflicts/Provides/Replaces | `kicad-symbols`, `kicad-footprints`, `kicad-templates` (versioned, so the archive's `kicad-libraries (>= 9.0.0~)` still resolves) | — |
 
-Measured breakdown for `kicad`: 256 MB of `share/kicad` after excluding 3dmodels (1176 MB) and
-demos (150 MB), plus ~15 MB of stripped binaries and libraries.
+`kicad`'s installed size is dominated by `share/kicad` -- symbols, footprints, templates and
+i18n data -- with 3dmodels (1176 MB) and demos (150 MB) excluded and stripped binaries and
+libraries a small fraction of the total.
 
 The 3D models are 7,242 `.step` files — plain text, measured to compress 10.7:1 on a
 three-directory sample — so the larger package is roughly a 115 MB download despite installing
@@ -251,12 +254,23 @@ this repo.
 
 ### Maintainer scripts
 
-`postinst` runs `ldconfig`, `update-desktop-database`, `gtk-update-icon-cache` and
-`update-mime-database`, each guarded by a `command -v` test. `ldconfig` is required: KiCad sets no
-`INSTALL_RPATH` on Linux and installs `libkicommon.so` and friends into the library path, so
-without a cache refresh every binary fails to start.
+Cache refreshes are dpkg-trigger-driven, not called from a maintainer script. `kicad.triggers`
+declares `activate-noawait ldconfig`: `libc-bin` exposes `ldconfig` as a *named* trigger, so a
+package shipping shared libraries opts in rather than calling `ldconfig` itself. `ldconfig` is
+required regardless of mechanism: KiCad sets no `INSTALL_RPATH` on Linux and installs
+`libkicommon.so` and friends into the library path, so without a cache refresh every binary fails
+to start.
 
-`postrm` refreshes the desktop and icon caches on `remove`.
+The other three caches need nothing from this repo at all: `desktop-file-utils`,
+`shared-mime-info` and `hicolor-icon-theme` declare **path-based** triggers on
+`/usr/share/applications`, `/usr/share/mime/packages` and `/usr/share/icons/hicolor`. Installing
+files into those paths fires `update-desktop-database`, `update-mime-database` and the icon-cache
+rebuild automatically; calling them from a maintainer script would duplicate work dpkg already
+does. All four triggers fire on both install and removal, so there is no `postrm`.
+
+`kicad.postinst` exists solely for the two `/usr/local` migration warnings described below.
+`kicad-packages3d` ships no maintainer scripts and no triggers at all: it is pure data, with no
+executables, shared libraries, desktop files or icons for any cache to refresh.
 
 ## Migration from a `/usr/local` source install
 
