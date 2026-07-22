@@ -461,20 +461,31 @@ Create `lib/shlibdeps.sh`:
 #     and --ignore-missing-info downgrades the failure. KiCad also installs its
 #     kiface plugin modules a directory deeper, under usr/lib/kicad, so that path
 #     is added too -- without it those modules' own NEEDED libs go unresolved.
+#
+# The ELF list comes from `file -N -0`, which NUL-terminates each filename
+# before its description. A plain `awk -F:` split instead truncates any path
+# containing a colon at the first colon, feeding dpkg-shlibdeps a bogus path.
 
 kicad_shlibdeps() {
     local stage=$1
-    local workdir elves out err rc
+    local workdir out err rc f desc
+    local elves=()
 
     if [ ! -d "$stage" ]; then
         echo "kicad_shlibdeps: no such stage directory: $stage" >&2
         return 1
     fi
 
-    mapfile -t elves < <(
+    while IFS= read -r -d '' f; do
+        IFS= read -r desc
+        case "$desc" in
+            *'ELF'*)
+                elves+=("$f")
+                ;;
+        esac
+    done < <(
         find "$stage" -type f \( -perm -u+x -o -name '*.so*' \) -print0 |
-            xargs -0 -r file -N |
-            awk -F: '/ELF/{print $1}'
+            xargs -0 -r file -N -0
     )
 
     if [ ${#elves[@]} -eq 0 ]; then
@@ -544,7 +555,8 @@ git commit -m "Add dpkg-shlibdeps wrapper handling missing control and private l
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `kicad_strip_tree <dir>` → strips every ELF under `<dir>`, echoes the count stripped.
+- Produces: `kicad_strip_tree <dir>` → strips every ELF under `<dir>`, echoes the count stripped,
+  and returns non-zero if `strip` failed on any file (all matching files are still attempted).
 
 The two packages are separated by staging them into different `DESTDIR` trees from the start —
 `kicad-packages3D`'s CMake installs only `${SHAPE_DIRS}` to the models directory, so nothing has
@@ -562,8 +574,10 @@ setup() {
     STAGE=$(mktemp -d)
     STAGE3D=$(mktemp -d)
     mkdir -p "$STAGE/usr/bin" "$STAGE/usr/share/kicad/3dmodels/Resistor.3dshapes"
-    cp /bin/ls "$STAGE/usr/bin/kicad"
-    echo "model" > "$STAGE/usr/share/kicad/3dmodels/Resistor.3dshapes/R.step"
+    # Compile a test binary with debug info to ensure we have something to strip
+    printf 'int main(void){return 0;}\n' >"$STAGE/test.c"
+    gcc -g -o "$STAGE/usr/bin/kicad" "$STAGE/test.c"
+    echo "model" >"$STAGE/usr/share/kicad/3dmodels/Resistor.3dshapes/R.step"
 }
 
 teardown() {
@@ -578,10 +592,10 @@ teardown() {
 
 @test "stripping actually removes debug sections" {
     # Build an object that definitely carries debug info.
-    printf 'int main(void){return 0;}\n' > "$STAGE/t.c"
+    printf 'int main(void){return 0;}\n' >"$STAGE/t.c"
     gcc -g -o "$STAGE/usr/bin/withdebug" "$STAGE/t.c"
     before=$(stat -c %s "$STAGE/usr/bin/withdebug")
-    kicad_strip_tree "$STAGE" > /dev/null
+    kicad_strip_tree "$STAGE" >/dev/null
     after=$(stat -c %s "$STAGE/usr/bin/withdebug")
     [ "$after" -lt "$before" ]
 }
@@ -589,6 +603,28 @@ teardown() {
 @test "a missing directory is rejected" {
     run kicad_strip_tree "$STAGE/does-not-exist"
     [ "$status" -ne 0 ]
+}
+
+@test "a strip failure is reported, not swallowed as success" {
+    # An unwritable-but-executable file is a realistic staged-permissions
+    # case: strip can read and identify it but cannot write the result back.
+    printf 'int main(void){return 0;}\n' >"$STAGE/u.c"
+    gcc -g -o "$STAGE/usr/bin/unwritable" "$STAGE/u.c"
+    chmod 555 "$STAGE/usr/bin/unwritable"
+    run kicad_strip_tree "$STAGE"
+    [ "$status" -ne 0 ]
+}
+
+@test "a filename containing a colon is still stripped and counted" {
+    printf 'int main(void){return 0;}\n' >"$STAGE/c.c"
+    gcc -g -o "$STAGE/usr/bin/kicad:helper" "$STAGE/c.c"
+    before=$(stat -c %s "$STAGE/usr/bin/kicad:helper")
+    run kicad_strip_tree "$STAGE"
+    [ "$status" -eq 0 ]
+    # setup's "kicad" plus this test's "kicad:helper" both need stripping.
+    [ "$output" -ge 2 ]
+    after=$(stat -c %s "$STAGE/usr/bin/kicad:helper")
+    [ "$after" -lt "$before" ]
 }
 ```
 
@@ -609,32 +645,48 @@ Create `lib/stage.sh`:
 # Stripping matches upstream: the official AppImage build extracts debug info
 # with objcopy --only-keep-debug, indexes it by build-id for debuginfod, then
 # runs strip --strip-unneeded over every ELF. Debug info is ~94% of binary size.
+#
+# The ELF list comes from `file -N -0`, which NUL-terminates each filename
+# before its description. A plain `awk -F:` split instead truncates any path
+# containing a colon at the first colon, handing strip a bogus, nonexistent
+# path -- which then fails silently unless every strip failure is checked.
 
 kicad_strip_tree() {
     local dir=$1
-    local count=0 f
+    local count=0 failed=0 f desc
 
     if [ ! -d "$dir" ]; then
         echo "kicad_strip_tree: no such directory: $dir" >&2
         return 1
     fi
 
-    while IFS= read -r f; do
-        strip --strip-unneeded "$f" 2> /dev/null && count=$((count + 1))
+    while IFS= read -r -d '' f; do
+        IFS= read -r desc
+        case "$desc" in
+            *'ELF'*'not stripped'*)
+                if strip --strip-unneeded "$f"; then
+                    count=$((count + 1))
+                else
+                    echo "kicad_strip_tree: strip failed on: $f" >&2
+                    failed=1
+                fi
+                ;;
+        esac
     done < <(
         find "$dir" -type f \( -perm -u+x -o -name '*.so*' \) -print0 |
-            xargs -0 -r file -N |
-            awk -F: '/ELF.*not stripped/{print $1}'
+            xargs -0 -r file -N -0
     )
 
     printf '%s\n' "$count"
+
+    [ "$failed" -eq 0 ]
 }
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `bats tests/stage.bats`
-Expected: `3 tests, 0 failures`.
+Expected: `5 tests, 0 failures`.
 
 - [ ] **Step 5: Lint**
 
@@ -1104,7 +1156,7 @@ They are re-seeded against the new prefix on next launch.
 - [ ] **Step 4: Verify the tests referenced in the README actually pass**
 
 Run: `bats tests/`
-Expected: `24 tests, 0 failures` across the three test files (14 version, 7 shlibdeps, 3 stage).
+Expected: `26 tests, 0 failures` across the three test files (14 version, 7 shlibdeps, 5 stage).
 
 - [ ] **Step 5: Commit**
 

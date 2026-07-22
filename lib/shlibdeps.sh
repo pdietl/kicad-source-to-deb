@@ -9,20 +9,31 @@
 #     and --ignore-missing-info downgrades the failure. KiCad also installs its
 #     kiface plugin modules a directory deeper, under usr/lib/kicad, so that path
 #     is added too -- without it those modules' own NEEDED libs go unresolved.
+#
+# The ELF list comes from `file -N -0`, which NUL-terminates each filename
+# before its description. A plain `awk -F:` split instead truncates any path
+# containing a colon at the first colon, feeding dpkg-shlibdeps a bogus path.
 
 kicad_shlibdeps() {
     local stage=$1
-    local workdir elves out err rc
+    local workdir out err rc f desc
+    local elves=()
 
     if [ ! -d "$stage" ]; then
         echo "kicad_shlibdeps: no such stage directory: $stage" >&2
         return 1
     fi
 
-    mapfile -t elves < <(
+    while IFS= read -r -d '' f; do
+        IFS= read -r desc
+        case "$desc" in
+            *'ELF'*)
+                elves+=("$f")
+                ;;
+        esac
+    done < <(
         find "$stage" -type f \( -perm -u+x -o -name '*.so*' \) -print0 |
-            xargs -0 -r file -N |
-            awk -F: '/ELF/{print $1}'
+            xargs -0 -r file -N -0
     )
 
     if [ ${#elves[@]} -eq 0 ]; then
