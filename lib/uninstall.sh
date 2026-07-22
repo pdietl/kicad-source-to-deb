@@ -33,3 +33,68 @@ kicad_uninstall_resolve_under_prefix() {
             ;;
     esac
 }
+
+# kicad_uninstall_remove_desktop_integration <prefix>
+#
+# PATH shadowing isn't the only way a source install under <prefix> outlives
+# its uninstall: XDG_DATA_DIRS puts "$prefix/share" ahead of "/usr/share"
+# (e.g. "/usr/local/share/:/usr/share/:..."), so a stale desktop entry, icon
+# or MIME definition left under <prefix> keeps winning over the one the .deb
+# installs, even after the executables are gone -- the desktop environment
+# still shows an entry whose Exec=kicad now resolves through PATH to nothing.
+#
+# "$prefix/share/applications", ".../icons/hicolor", ".../mime/packages" and
+# the completion directories are shared with other locally-installed
+# software, so only the exact files KiCad's own install places there are
+# removed here, by name; the containing directories are never touched.
+# "$prefix/share/kicad" is KiCad-exclusive and is removed wholesale by the
+# caller instead.
+kicad_uninstall_remove_desktop_integration() {
+    local prefix=$1 size scalable mimetype
+
+    rm -f "$prefix"/share/applications/org.kicad.kicad.desktop \
+        "$prefix"/share/applications/org.kicad.eeschema.desktop \
+        "$prefix"/share/applications/org.kicad.gerbview.desktop \
+        "$prefix"/share/applications/org.kicad.pcbnew.desktop \
+        "$prefix"/share/applications/org.kicad.pcbcalculator.desktop \
+        "$prefix"/share/applications/org.kicad.bitmap2component.desktop
+
+    for size in 16x16 24x24 32x32 48x48 64x64 128x128; do
+        [ -d "$prefix/share/icons/hicolor/$size" ] || continue
+        rm -f "$prefix/share/icons/hicolor/$size"/apps/kicad.png \
+            "$prefix/share/icons/hicolor/$size"/apps/eeschema.png \
+            "$prefix/share/icons/hicolor/$size"/apps/gerbview.png \
+            "$prefix/share/icons/hicolor/$size"/apps/pcbnew.png \
+            "$prefix/share/icons/hicolor/$size"/apps/pcbcalculator.png \
+            "$prefix/share/icons/hicolor/$size"/apps/bitmap2component.png
+        rm -f "$prefix/share/icons/hicolor/$size"/mimetypes/application-x-kicad-footprint.png \
+            "$prefix/share/icons/hicolor/$size"/mimetypes/application-x-kicad-pcb.png \
+            "$prefix/share/icons/hicolor/$size"/mimetypes/application-x-kicad-project.png \
+            "$prefix/share/icons/hicolor/$size"/mimetypes/application-x-kicad-schematic.png \
+            "$prefix/share/icons/hicolor/$size"/mimetypes/application-x-kicad-symbol.png \
+            "$prefix/share/icons/hicolor/$size"/mimetypes/application-x-kicad-worksheet.png
+    done
+
+    scalable="$prefix/share/icons/hicolor/scalable"
+    if [ -d "$scalable" ]; then
+        rm -f "$scalable"/apps/kicad.svg "$scalable"/apps/eeschema.svg \
+            "$scalable"/apps/gerbview.svg "$scalable"/apps/pcbnew.svg \
+            "$scalable"/apps/pcbcalculator.svg "$scalable"/apps/bitmap2component.svg
+        for mimetype in footprint pcb project schematic symbol worksheet; do
+            rm -f "$scalable/mimetypes/application-x-kicad-$mimetype.svg" \
+                "$scalable/mimetypes/application-x-kicad-$mimetype-16.svg" \
+                "$scalable/mimetypes/application-x-kicad-$mimetype-24.svg" \
+                "$scalable/mimetypes/application-x-kicad-$mimetype-32.svg" \
+                "$scalable/mimetypes/application-x-kicad-$mimetype-48.svg" \
+                "$scalable/mimetypes/application-x-kicad-$mimetype-64.svg"
+        done
+    fi
+
+    rm -f "$prefix"/share/mime/packages/kicad-gerbers.xml \
+        "$prefix"/share/mime/packages/kicad-kicad.xml
+
+    rm -f "$prefix"/share/metainfo/org.kicad.kicad.metainfo.xml
+
+    rm -f "$prefix"/share/bash-completion/completions/kicad-cli \
+        "$prefix"/share/zsh/site-functions/_kicad-cli
+}

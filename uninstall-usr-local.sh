@@ -70,6 +70,8 @@ else
 
     rm -f "$PREFIX"/lib/python3/dist-packages/pcbnew.py \
         "$PREFIX"/lib/python3/dist-packages/_pcbnew.so
+
+    kicad_uninstall_remove_desktop_integration "$PREFIX"
 fi
 
 # Prune directories now left empty by the removals above. Restricted to
@@ -83,4 +85,19 @@ for d in "$PREFIX/share/kicad" "$PREFIX/lib/kicad" "$PREFIX/lib/x86_64-linux-gnu
 done
 
 ldconfig
+
+# The .deb's own desktop/MIME/icon caches are refreshed via dpkg triggers,
+# but those triggers only fire for /usr/share; a manual /usr/local cleanup
+# gets no trigger, so the caches are refreshed here explicitly. Each tool is
+# optional on the host and its failure does not abort the script.
+if command -v update-desktop-database >/dev/null 2>&1 && [ -d "$PREFIX/share/applications" ]; then
+    update-desktop-database "$PREFIX/share/applications" || true
+fi
+if command -v update-mime-database >/dev/null 2>&1 && [ -d "$PREFIX/share/mime" ]; then
+    update-mime-database "$PREFIX/share/mime" || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -d "$PREFIX/share/icons/hicolor" ]; then
+    gtk-update-icon-cache -f -t "$PREFIX/share/icons/hicolor" || true
+fi
+
 echo "Done. /usr/local KiCad removed."

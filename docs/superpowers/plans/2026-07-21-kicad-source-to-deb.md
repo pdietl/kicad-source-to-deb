@@ -1159,7 +1159,8 @@ git commit -m "Add build orchestrator producing both deb packages"
 - Create: `uninstall-usr-local.sh`, `lib/uninstall.sh`, `tests/uninstall.bats`, `README.md`
 
 **Interfaces:**
-- Consumes: `lib/uninstall.sh` (`kicad_uninstall_resolve_under_prefix`)
+- Consumes: `lib/uninstall.sh` (`kicad_uninstall_resolve_under_prefix`,
+  `kicad_uninstall_remove_desktop_integration`)
 - Produces: `uninstall-usr-local.sh`, invoked by `provision` in Task 8.
 
 - [ ] **Step 1: Write `lib/uninstall.sh`**
@@ -1209,6 +1210,71 @@ kicad_uninstall_resolve_under_prefix() {
             ;;
     esac
 }
+
+# kicad_uninstall_remove_desktop_integration <prefix>
+#
+# PATH shadowing isn't the only way a source install under <prefix> outlives
+# its uninstall: XDG_DATA_DIRS puts "$prefix/share" ahead of "/usr/share"
+# (e.g. "/usr/local/share/:/usr/share/:..."), so a stale desktop entry, icon
+# or MIME definition left under <prefix> keeps winning over the one the .deb
+# installs, even after the executables are gone -- the desktop environment
+# still shows an entry whose Exec=kicad now resolves through PATH to nothing.
+#
+# "$prefix/share/applications", ".../icons/hicolor", ".../mime/packages" and
+# the completion directories are shared with other locally-installed
+# software, so only the exact files KiCad's own install places there are
+# removed here, by name; the containing directories are never touched.
+# "$prefix/share/kicad" is KiCad-exclusive and is removed wholesale by the
+# caller instead.
+kicad_uninstall_remove_desktop_integration() {
+    local prefix=$1 size scalable mimetype
+
+    rm -f "$prefix"/share/applications/org.kicad.kicad.desktop \
+        "$prefix"/share/applications/org.kicad.eeschema.desktop \
+        "$prefix"/share/applications/org.kicad.gerbview.desktop \
+        "$prefix"/share/applications/org.kicad.pcbnew.desktop \
+        "$prefix"/share/applications/org.kicad.pcbcalculator.desktop \
+        "$prefix"/share/applications/org.kicad.bitmap2component.desktop
+
+    for size in 16x16 24x24 32x32 48x48 64x64 128x128; do
+        [ -d "$prefix/share/icons/hicolor/$size" ] || continue
+        rm -f "$prefix/share/icons/hicolor/$size"/apps/kicad.png \
+            "$prefix/share/icons/hicolor/$size"/apps/eeschema.png \
+            "$prefix/share/icons/hicolor/$size"/apps/gerbview.png \
+            "$prefix/share/icons/hicolor/$size"/apps/pcbnew.png \
+            "$prefix/share/icons/hicolor/$size"/apps/pcbcalculator.png \
+            "$prefix/share/icons/hicolor/$size"/apps/bitmap2component.png
+        rm -f "$prefix/share/icons/hicolor/$size"/mimetypes/application-x-kicad-footprint.png \
+            "$prefix/share/icons/hicolor/$size"/mimetypes/application-x-kicad-pcb.png \
+            "$prefix/share/icons/hicolor/$size"/mimetypes/application-x-kicad-project.png \
+            "$prefix/share/icons/hicolor/$size"/mimetypes/application-x-kicad-schematic.png \
+            "$prefix/share/icons/hicolor/$size"/mimetypes/application-x-kicad-symbol.png \
+            "$prefix/share/icons/hicolor/$size"/mimetypes/application-x-kicad-worksheet.png
+    done
+
+    scalable="$prefix/share/icons/hicolor/scalable"
+    if [ -d "$scalable" ]; then
+        rm -f "$scalable"/apps/kicad.svg "$scalable"/apps/eeschema.svg \
+            "$scalable"/apps/gerbview.svg "$scalable"/apps/pcbnew.svg \
+            "$scalable"/apps/pcbcalculator.svg "$scalable"/apps/bitmap2component.svg
+        for mimetype in footprint pcb project schematic symbol worksheet; do
+            rm -f "$scalable/mimetypes/application-x-kicad-$mimetype.svg" \
+                "$scalable/mimetypes/application-x-kicad-$mimetype-16.svg" \
+                "$scalable/mimetypes/application-x-kicad-$mimetype-24.svg" \
+                "$scalable/mimetypes/application-x-kicad-$mimetype-32.svg" \
+                "$scalable/mimetypes/application-x-kicad-$mimetype-48.svg" \
+                "$scalable/mimetypes/application-x-kicad-$mimetype-64.svg"
+        done
+    fi
+
+    rm -f "$prefix"/share/mime/packages/kicad-gerbers.xml \
+        "$prefix"/share/mime/packages/kicad-kicad.xml
+
+    rm -f "$prefix"/share/metainfo/org.kicad.kicad.metainfo.xml
+
+    rm -f "$prefix"/share/bash-completion/completions/kicad-cli \
+        "$prefix"/share/zsh/site-functions/_kicad-cli
+}
 ```
 
 - [ ] **Step 2: Write `uninstall-usr-local.sh`**
@@ -1226,6 +1292,24 @@ are shared with other software, so only the specific files KiCad owns are
 removed from them; `share/kicad` and the multiarch/non-multiarch
 `lib/.../kicad` subtrees are directories KiCad owns exclusively and can be
 removed wholesale.
+
+PATH shadowing is not the only shadowing mechanism: `XDG_DATA_DIRS` puts
+`/usr/local/share/` ahead of `/usr/share/`, so a stale desktop entry, icon or
+MIME definition left under `/usr/local/share` keeps winning over the one the
+`.deb` installs, even after the executables above are gone -- the desktop
+environment still shows an entry whose `Exec=kicad` now resolves through
+PATH to nothing. `kicad_uninstall_remove_desktop_integration` (in
+`lib/uninstall.sh`) removes exactly those files -- diffed empty against
+`dpkg-deb -c` for `share/applications/org.kicad.*.desktop`,
+`share/icons/hicolor/**` (apps and mimetypes, all six raster sizes plus
+scalable), `share/mime/packages/kicad-*.xml`, `share/metainfo/`, and the
+bash/zsh completions -- by exact filename, never a glob, since
+`share/applications`, `share/icons/hicolor`, `share/mime` and the completion
+directories are shared with other locally-installed software. The script
+also refreshes `update-desktop-database`, `update-mime-database` and
+`gtk-update-icon-cache` at the end when each tool exists and is non-fatal
+when it doesn't: the `.deb`'s own refresh runs via dpkg triggers, but those
+only fire for `/usr/share`, so a manual `/usr/local` cleanup gets none.
 
 ```bash
 #!/usr/bin/env bash
@@ -1300,6 +1384,8 @@ else
 
     rm -f "$PREFIX"/lib/python3/dist-packages/pcbnew.py \
         "$PREFIX"/lib/python3/dist-packages/_pcbnew.so
+
+    kicad_uninstall_remove_desktop_integration "$PREFIX"
 fi
 
 # Prune directories now left empty by the removals above. Restricted to
@@ -1313,6 +1399,21 @@ for d in "$PREFIX/share/kicad" "$PREFIX/lib/kicad" "$PREFIX/lib/x86_64-linux-gnu
 done
 
 ldconfig
+
+# The .deb's own desktop/MIME/icon caches are refreshed via dpkg triggers,
+# but those triggers only fire for /usr/share; a manual /usr/local cleanup
+# gets no trigger, so the caches are refreshed here explicitly. Each tool is
+# optional on the host and its failure does not abort the script.
+if command -v update-desktop-database >/dev/null 2>&1 && [ -d "$PREFIX/share/applications" ]; then
+    update-desktop-database "$PREFIX/share/applications" || true
+fi
+if command -v update-mime-database >/dev/null 2>&1 && [ -d "$PREFIX/share/mime" ]; then
+    update-mime-database "$PREFIX/share/mime" || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -d "$PREFIX/share/icons/hicolor" ]; then
+    gtk-update-icon-cache -f -t "$PREFIX/share/icons/hicolor" || true
+fi
+
 echo "Done. /usr/local KiCad removed."
 ```
 
@@ -1326,6 +1427,13 @@ merely shares the prefix as a text string (e.g. `/usr/local-evil`, which a
 slash-less `case` match would wrongly accept), a symlinked intermediate
 component that escapes the prefix, and a nonexistent path under the prefix
 (the already-removed-by-a-prior-run case `realpath -m` exists to support).
+
+Also unit-tests `kicad_uninstall_remove_desktop_integration`: a no-op-without-
+error run against an empty prefix, and a run against a fake tree seeded with
+both KiCad's own desktop/icon/mime/metainfo/completion files and a decoy
+belonging to another application in each of the shared directories (e.g.
+`other-app.desktop`, an unrelated icon, an unrelated mime xml) -- asserts the
+KiCad files are gone, the decoys and the containing directories both survive.
 
 - [ ] **Step 4: Lint**
 
@@ -1402,8 +1510,8 @@ They are re-seeded against the new prefix on next launch.
 - [ ] **Step 6: Verify the tests referenced in the README actually pass**
 
 Run: `bats tests/`
-Expected: `36 tests, 0 failures` across the four test files (14 version, 8 shlibdeps,
-6 stage, 8 uninstall).
+Expected: `38 tests, 0 failures` across the four test files (14 version, 8 shlibdeps,
+6 stage, 10 uninstall).
 
 - [ ] **Step 7: Commit**
 
