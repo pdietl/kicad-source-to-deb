@@ -7,30 +7,34 @@
 # everything, which is the only construct that orders a prerelease correctly.
 
 kicad_deb_version() {
-    local describe=$1
+    local describe=${1:-}
     local base suffix commits sha upstream
+    # Anchored end to end: dotted numeric version, optional lowercase
+    # prerelease marker, optional git-describe "-<commits>-g<sha>" tail.
+    # Anything that doesn't fully match is refused rather than passed
+    # through — an unrecognised format could still print a version string,
+    # but one whose ordering guarantee we can no longer vouch for.
+    local pattern='^([0-9]+(\.[0-9]+)*)(-((rc|beta|alpha)[0-9]+))?(-([0-9]+)-(g[0-9a-f]+))?$'
 
     if [ -z "$describe" ]; then
         echo "kicad_deb_version: empty describe output" >&2
         return 1
     fi
 
-    # Split a trailing "-<commits>-g<sha>" produced by git describe past a tag.
-    commits=""
-    sha=""
-    if [[ $describe =~ ^(.+)-([0-9]+)-(g[0-9a-f]+)$ ]]; then
-        describe=${BASH_REMATCH[1]}
-        commits=${BASH_REMATCH[2]}
-        sha=${BASH_REMATCH[3]}
+    if ! [[ $describe =~ $pattern ]]; then
+        echo "kicad_deb_version: unrecognized describe format: $describe" >&2
+        return 1
     fi
 
-    # Split a prerelease marker off the tag.
-    if [[ $describe =~ ^(.+)-((rc|beta|alpha)[0-9]*)$ ]]; then
-        base=${BASH_REMATCH[1]}
-        suffix=${BASH_REMATCH[2]}
+    base=${BASH_REMATCH[1]}
+    suffix=${BASH_REMATCH[4]}
+    commits=${BASH_REMATCH[7]}
+    sha=${BASH_REMATCH[8]}
+
+    if [ -n "$suffix" ]; then
         upstream="${base}~${suffix}"
     else
-        upstream=$describe
+        upstream=$base
     fi
 
     if [ -n "$commits" ]; then

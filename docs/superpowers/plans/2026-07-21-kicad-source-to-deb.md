@@ -234,6 +234,32 @@ setup() {
     run kicad_deb_version ""
     [ "$status" -ne 0 ]
 }
+
+@test "a bare two-component version is accepted" {
+    run kicad_deb_version "11.0"
+    [ "$status" -eq 0 ]
+    [ "$output" = "11.0-1" ]
+}
+
+@test "an uppercase prerelease marker is rejected" {
+    run kicad_deb_version "10.0.5-RC1"
+    [ "$status" -ne 0 ]
+}
+
+@test "an unrecognized suffix is rejected" {
+    run kicad_deb_version "10.0.5-banana7"
+    [ "$status" -ne 0 ]
+}
+
+@test "whitespace-only input is rejected" {
+    run kicad_deb_version " "
+    [ "$status" -ne 0 ]
+}
+
+@test "a call with no argument is rejected cleanly rather than crashing" {
+    run kicad_deb_version
+    [ "$status" -ne 0 ]
+}
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -255,30 +281,34 @@ Create `lib/version.sh`:
 # everything, which is the only construct that orders a prerelease correctly.
 
 kicad_deb_version() {
-    local describe=$1
+    local describe=${1:-}
     local base suffix commits sha upstream
+    # Anchored end to end: dotted numeric version, optional lowercase
+    # prerelease marker, optional git-describe "-<commits>-g<sha>" tail.
+    # Anything that doesn't fully match is refused rather than passed
+    # through — an unrecognised format could still print a version string,
+    # but one whose ordering guarantee we can no longer vouch for.
+    local pattern='^([0-9]+(\.[0-9]+)*)(-((rc|beta|alpha)[0-9]+))?(-([0-9]+)-(g[0-9a-f]+))?$'
 
     if [ -z "$describe" ]; then
         echo "kicad_deb_version: empty describe output" >&2
         return 1
     fi
 
-    # Split a trailing "-<commits>-g<sha>" produced by git describe past a tag.
-    commits=""
-    sha=""
-    if [[ $describe =~ ^(.+)-([0-9]+)-(g[0-9a-f]+)$ ]]; then
-        describe=${BASH_REMATCH[1]}
-        commits=${BASH_REMATCH[2]}
-        sha=${BASH_REMATCH[3]}
+    if ! [[ $describe =~ $pattern ]]; then
+        echo "kicad_deb_version: unrecognized describe format: $describe" >&2
+        return 1
     fi
 
-    # Split a prerelease marker off the tag.
-    if [[ $describe =~ ^(.+)-((rc|beta|alpha)[0-9]*)$ ]]; then
-        base=${BASH_REMATCH[1]}
-        suffix=${BASH_REMATCH[2]}
+    base=${BASH_REMATCH[1]}
+    suffix=${BASH_REMATCH[4]}
+    commits=${BASH_REMATCH[7]}
+    sha=${BASH_REMATCH[8]}
+
+    if [ -n "$suffix" ]; then
         upstream="${base}~${suffix}"
     else
-        upstream=$describe
+        upstream=$base
     fi
 
     if [ -n "$commits" ]; then
@@ -292,7 +322,7 @@ kicad_deb_version() {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `bats tests/version.bats`
-Expected: `9 tests, 0 failures`.
+Expected: `14 tests, 0 failures`.
 
 - [ ] **Step 5: Lint**
 
@@ -1014,7 +1044,7 @@ They are re-seeded against the new prefix on next launch.
 - [ ] **Step 4: Verify the tests referenced in the README actually pass**
 
 Run: `bats tests/`
-Expected: `17 tests, 0 failures` across the three test files (9 version, 5 shlibdeps, 3 stage).
+Expected: `22 tests, 0 failures` across the three test files (14 version, 5 shlibdeps, 3 stage).
 
 - [ ] **Step 5: Commit**
 

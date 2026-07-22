@@ -61,3 +61,29 @@ setup() {
     run kicad_deb_version ""
     [ "$status" -ne 0 ]
 }
+
+@test "a bare two-component version is accepted" {
+    run kicad_deb_version "11.0"
+    [ "$status" -eq 0 ]
+    [ "$output" = "11.0-1" ]
+}
+
+@test "an uppercase prerelease marker is rejected" {
+    run kicad_deb_version "10.0.5-RC1"
+    [ "$status" -ne 0 ]
+}
+
+@test "an unrecognized suffix is rejected" {
+    run kicad_deb_version "10.0.5-banana7"
+    [ "$status" -ne 0 ]
+}
+
+@test "whitespace-only input is rejected" {
+    run kicad_deb_version " "
+    [ "$status" -ne 0 ]
+}
+
+@test "a call with no argument is rejected cleanly rather than crashing" {
+    run kicad_deb_version
+    [ "$status" -ne 0 ]
+}
