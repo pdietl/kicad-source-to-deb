@@ -1,0 +1,27 @@
+pcbnew: construct point-on-line candidates in place
+
+computeAnchors built a NEARABLE_GEOM from the visited alternative and
+then copied that variant into the candidate vector. Every
+INTERSECTABLE_GEOM alternative is also a NEARABLE_GEOM alternative, so
+emplacing the alternative directly builds the same variant and drops the
+copy.
+
+It also drops a -Wmaybe-uninitialized false positive: GCC cannot track
+which alternative is engaged across the intermediate variant's
+copy-construction, so it reported the BOX2I alternative's storage as
+possibly-uninitialised.
+
+diff --git a/pcbnew/tools/pcb_grid_helper.cpp b/pcbnew/tools/pcb_grid_helper.cpp
+index bc6366db34..8a53800c02 100644
+--- a/pcbnew/tools/pcb_grid_helper.cpp
++++ b/pcbnew/tools/pcb_grid_helper.cpp
+@@ -1255,8 +1255,7 @@ void PCB_GRID_HELPER::computeAnchors( const std::vector<BOARD_ITEM*>& aItems,
+             std::visit(
+                     [&]( const auto& geom )
+                     {
+-                        NEARABLE_GEOM nearable( geom );
+-                        m_pointOnLineCandidates.emplace_back( nearable );
++                        m_pointOnLineCandidates.emplace_back( geom );
+                     },
+                     intersectable.Geometry );
+         }

@@ -1,0 +1,27 @@
+cmake: opt in to CMP0167 so Boost is found via BoostConfig
+
+CMake 3.30 removed the FindBoost module and warns whenever a project
+relies on it without stating a policy. KiCad consumes Boost purely
+through imported targets (Boost::headers, Boost::locale, Boost::boost),
+all of which upstream's BoostConfig.cmake provides, so selecting the NEW
+behaviour needs no other change. The guard keeps the file working on
+CMake versions that predate the policy.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 420f18bcb4..9933d0f8d5 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -41,6 +41,13 @@ if (POLICY CMP0141)
+   cmake_policy(SET CMP0141 NEW)
+ endif (POLICY CMP0141)
+ 
++# Boost is consumed purely through its imported targets (Boost::headers,
++# Boost::locale, Boost::boost), all of which upstream's BoostConfig.cmake
++# provides, so the removed FindBoost module is not needed.
++if( POLICY CMP0167 )
++    cmake_policy( SET CMP0167 NEW )
++endif()
++
+ # Default to CMAKE_BUILD_TYPE = Release unless overridden on command line
+ # http://www.cmake.org/pipermail/cmake/2008-September/023808.html
+ if( DEFINED CMAKE_BUILD_TYPE )

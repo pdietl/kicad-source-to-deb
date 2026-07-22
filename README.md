@@ -45,10 +45,39 @@ checkouts.
 
     sudo apt install ./kicad_*.deb ./kicad-packages3d_*.deb
 
+## Patches
+
+`patches/kicad/*.patch` are applied to the KiCad checkout after the workspace
+syncs, in numeric order. Each one exists to make the build warning-free on the
+toolchain in `build-kicad-deb.sh`'s supported target; the header of each patch
+says what it fixes and why.
+
+Applying is idempotent and never resets the checkout, because `west update`
+carries uncommitted changes forward rather than discarding them -- a patch
+already present is detected and skipped, so local edits to the source tree
+survive a rebuild. A patch that neither applies nor is already applied stops
+the build rather than being skipped, since a silently dropped patch reinstates
+whatever it fixed.
+
+To add one, edit `work/kicad`, then capture just that change:
+
+    git -C work/kicad diff -- path/to/file > patches/kicad/000N-summary.patch
+
+and prepend a short prose header explaining the reason (`git apply` ignores
+leading text). `bats tests/patch.bats` checks the whole set still applies.
+
+Two CMake policy warnings are *not* patched: KiCad sets CMP0116 and CMP0113 to
+OLD deliberately, each for a documented reason, so `build-kicad-deb.sh` passes
+`-Wno-deprecated` instead. It intentionally does not pass `-Wno-dev`, which
+would also suppress developer warnings worth seeing.
+
 ## Upgrading to a new KiCad release
 
 Edit the five `revision:` values in `west.yml`, then rerun `./build-kicad-deb.sh` --
 it syncs the workspace to the new revisions before building.
+
+A revision bump can strand a patch. `bats tests/patch.bats` reports that against
+the current checkout in seconds, rather than letting the build discover it.
 
 ## Migrating from a /usr/local source install
 

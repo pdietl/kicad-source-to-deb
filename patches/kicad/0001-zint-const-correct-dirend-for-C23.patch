@@ -1,0 +1,33 @@
+zint: make out_fopen's dirend const, for C23 strrchr
+
+GCC 15 defaults to -std=gnu23, where glibc resolves strrchr() on a
+const char * to a const char * return, so initialising a char * from it
+discards the qualifier (-Wdiscarded-qualifiers). dirend is only ever used
+for pointer arithmetic against filename, never written through, so the
+const-qualified type is the correct one.
+
+Upstream zint predates C23; this keeps the vendored copy warning-free
+without changing behaviour.
+
+diff --git a/thirdparty/zint/backend/output.c b/thirdparty/zint/backend/output.c
+index e98d952d7e..6c52fcb359 100644
+--- a/thirdparty/zint/backend/output.c
++++ b/thirdparty/zint/backend/output.c
+@@ -965,13 +965,15 @@ INTERNAL FILE *out_fopen(const char filename[256], const char *mode) {
+ #endif
+         char dirname[256];
+         char *d;
++        /* const: C23 resolves strrchr() on a const char * to a const char *
++           return, and this only ever does pointer arithmetic on the result. */
+ #ifdef _WIN32
+-        char *dirend = strrchr(filename, '\\');
++        const char *dirend = strrchr(filename, '\\');
+         if (!dirend) {
+             dirend = strrchr(filename, '/');
+         }
+ #else
+-        char *dirend = strrchr(filename, '/');
++        const char *dirend = strrchr(filename, '/');
+ #endif
+         if (!dirend) {
+             return outfile;

@@ -10,28 +10,32 @@ manifest:
     remote: kicad
 
   projects:
+    # The .git suffix on every repo-path is load-bearing: without it GitLab
+    # answers each fetch with a redirect to the suffixed URL, which git
+    # reports as a warning on every sync.
+    #
     # Full history deliberately: the build derives its version string from
     # `git describe`, which needs accurate commit counts.
     - name: kicad
-      repo-path: code/kicad
+      repo-path: code/kicad.git
       revision: 10.0.5-rc1
 
     - name: kicad-symbols
-      repo-path: libraries/kicad-symbols
+      repo-path: libraries/kicad-symbols.git
       revision: 10.0.5-rc1
       clone-depth: 1
 
     - name: kicad-footprints
-      repo-path: libraries/kicad-footprints
+      repo-path: libraries/kicad-footprints.git
       revision: 10.0.5-rc1
       clone-depth: 1
 
     - name: kicad-templates
-      repo-path: libraries/kicad-templates
+      repo-path: libraries/kicad-templates.git
       revision: 10.0.5-rc1
       clone-depth: 1
 
     - name: kicad-packages3D
-      repo-path: libraries/kicad-packages3D
+      repo-path: libraries/kicad-packages3D.git
       revision: 10.0.5-rc1
       clone-depth: 1

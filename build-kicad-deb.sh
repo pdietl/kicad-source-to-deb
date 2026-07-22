@@ -19,6 +19,8 @@ ORIG_DIR=$(pwd)
 . "$SCRIPT_DIR/lib/shlibdeps.sh"
 # shellcheck source=lib/stage.sh
 . "$SCRIPT_DIR/lib/stage.sh"
+# shellcheck source=lib/patch.sh
+. "$SCRIPT_DIR/lib/patch.sh"
 
 echo -e "${GREEN}KiCad source-to-deb builder${NC}"
 echo "================================"
@@ -120,11 +122,22 @@ fi
 stage "Syncing repositories"
 (cd "$WORKSPACE" && west update)
 
+stage "Applying patches"
+kicad_apply_patches "$SCRIPT_DIR/patches/kicad" "$WORKSPACE/kicad"
+
 VERSION=$(kicad_deb_version "$(git -C "$WORKSPACE/kicad" describe --tags)")
 echo -e "${GREEN}Package version: $VERSION${NC}"
 
 stage "Configuring KiCad"
-cmake -S "$WORKSPACE/kicad" -B "$WORKSPACE/build" -G Ninja \
+# -Wno-deprecated silences CMake's complaint about the two policies KiCad
+# sets to OLD on purpose, each for a reason its CMakeLists records: CMP0116
+# (DEPFILE paths must not be rewritten) and CMP0113 (the doxygen/swig
+# add_custom_command has to run twice, which the NEW behavior deduplicates
+# away). Neither can be moved to NEW without reworking those rules upstream,
+# so the warning carries no action here. -Wno-dev is deliberately not used
+# alongside it: that would also hide developer warnings worth acting on, of
+# which CMP0167 is one -- patches/ addresses that one rather than muting it.
+cmake -S "$WORKSPACE/kicad" -B "$WORKSPACE/build" -G Ninja -Wno-deprecated \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DDEFAULT_INSTALL_PATH=/usr \

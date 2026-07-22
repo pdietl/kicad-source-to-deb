@@ -1,0 +1,30 @@
+pcbnew: size the specctra via-name buffer for its widest output
+
+"Via[%d-%d]_%.6g:%.6g_um" can produce 60 characters -- two ints at 11,
+two %.6g at 13, 11 of literal text and the terminator -- but the buffer
+held 48, so GCC reports the last directive as possibly truncated
+(-Wformat-truncation). Truncation here is not cosmetic: the string
+becomes the padstack id, so a truncated one silently collides with
+another via's.
+
+Reaching the maximum needs implausible layer numbers, which is why this
+has never been observed; the buffer is sized to make it unreachable
+rather than unlikely.
+
+diff --git a/pcbnew/specctra_import_export/specctra_export.cpp b/pcbnew/specctra_import_export/specctra_export.cpp
+index 6cabcbad4b..af260f9d7a 100644
+--- a/pcbnew/specctra_import_export/specctra_export.cpp
++++ b/pcbnew/specctra_import_export/specctra_export.cpp
+@@ -967,7 +967,11 @@ IMAGE* SPECCTRA_DB::makeIMAGE( BOARD* aBoard, FOOTPRINT* aFootprint )
+ PADSTACK* SPECCTRA_DB::makeVia( int aCopperDiameter, int aDrillDiameter,
+                                 int aTopLayer, int aBotLayer )
+ {
+-    char        name[48];
++    // Sized for the widest "Via[%d-%d]_%.6g:%.6g_um" this can produce: two
++    // ints at 11 chars each, two %.6g at 13, 11 of literal text and the
++    // terminator. Truncating instead would silently yield a padstack id that
++    // collides with another via's.
++    char        name[64];
+     PADSTACK*   padstack = new PADSTACK();
+     double      dsnDiameter = scale( aCopperDiameter );
+ 
