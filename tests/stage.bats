@@ -46,6 +46,20 @@ teardown() {
     [ "$status" -ne 0 ]
 }
 
+@test "a non-executable ELF (mode 0644, like a .kiface module) is stripped and counted" {
+    # KiCad's plugin modules (_pcbnew.kiface, _eeschema.kiface, ...) install
+    # this way: a regular file, no execute bit, no ".so" in the name.
+    printf 'int main(void){return 0;}\n' >"$STAGE/m.c"
+    gcc -g -o "$STAGE/usr/bin/_pcbnew.kiface" "$STAGE/m.c"
+    chmod 644 "$STAGE/usr/bin/_pcbnew.kiface"
+    before=$(stat -c %s "$STAGE/usr/bin/_pcbnew.kiface")
+    run kicad_strip_tree "$STAGE"
+    [ "$status" -eq 0 ]
+    [ "$output" -ge 1 ]
+    after=$(stat -c %s "$STAGE/usr/bin/_pcbnew.kiface")
+    [ "$after" -lt "$before" ]
+}
+
 @test "a filename containing a colon is still stripped and counted" {
     printf 'int main(void){return 0;}\n' >"$STAGE/c.c"
     gcc -g -o "$STAGE/usr/bin/kicad:helper" "$STAGE/c.c"

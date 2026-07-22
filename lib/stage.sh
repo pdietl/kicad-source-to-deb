@@ -10,6 +10,12 @@
 # before its description. A plain `awk -F:` split instead truncates any path
 # containing a colon at the first colon, handing strip a bogus, nonexistent
 # path -- which then fails silently unless every strip failure is checked.
+#
+# Every regular file is tested, not just executable ones or ones named
+# *.so*: KiCad's kiface plugin modules (_pcbnew.kiface, _eeschema.kiface,
+# _cvpcb.kiface, ...) install mode 0644 with no ".so" in the name, so a
+# permission- or name-based filter never sees them -- and they are KiCad's
+# largest binaries, so skipping them dominates package size.
 
 kicad_strip_tree() {
     local dir=$1
@@ -33,7 +39,7 @@ kicad_strip_tree() {
                 ;;
         esac
     done < <(
-        find "$dir" -type f \( -perm -u+x -o -name '*.so*' \) -print0 |
+        find "$dir" -type f -print0 |
             xargs -0 -r file -N -0
     )
 

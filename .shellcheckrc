@@ -1,0 +1,6 @@
+# build-kicad-deb.sh sources lib/*.sh and /etc/os-release. Without this,
+# shellcheck treats every sourced file as unresolved (SC1091) unless each
+# invocation passes -x, which the plan's documented verification command does
+# not. `# shellcheck source=` comments on the lib/*.sh sourcing pin the path;
+# this setting is what makes ShellCheck act on that pin.
+external-sources=true
