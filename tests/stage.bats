@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 
 setup() {
+    load "${BATS_TEST_DIRNAME}/../lib/elf.sh"
     load "${BATS_TEST_DIRNAME}/../lib/stage.sh"
     STAGE=$(mktemp -d)
     STAGE3D=$(mktemp -d)

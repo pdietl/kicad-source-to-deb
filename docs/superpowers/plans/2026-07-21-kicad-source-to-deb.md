@@ -29,6 +29,7 @@
 |---|---|
 | `west.yml` | Pins the five upstream repos by tag and clone depth |
 | `lib/version.sh` | Derives the Debian version from `git describe` output. Pure. |
+| `lib/elf.sh` | Enumerates ELF files under a tree by `file`-based type, not name or permission bits. Shared by `lib/shlibdeps.sh` and `lib/stage.sh`. |
 | `lib/shlibdeps.sh` | Wraps `dpkg-shlibdeps` with its two workarounds. |
 | `lib/stage.sh` | Strips debug info from every ELF in a staging tree. |
 | `build-kicad-deb.sh` | Orchestrator. Preflight, sync, configure, build, package. |
@@ -341,10 +342,11 @@ git commit -m "Add Debian version derivation with prerelease tilde handling"
 ### Task 3: Dependency computation
 
 **Files:**
-- Create: `lib/shlibdeps.sh`, `tests/shlibdeps.bats`
+- Create: `lib/elf.sh`, `lib/shlibdeps.sh`, `tests/shlibdeps.bats`
 
 **Interfaces:**
 - Consumes: nothing
+- Produces: `kicad_find_elf <dir> <desc-glob>` → prints NUL-terminated paths of every regular file under `<dir>` whose `file` description matches the glob (e.g. `'*ELF*'`). Shared with Task 4, which reuses it rather than re-deriving its own `find`/`file` predicate.
 - Produces: `kicad_shlibdeps <stage-dir>` → echoes the value for a `Depends:` field, e.g. `libc6 (>= 2.38), libwxgtk3.2-1t64, ...`. Used by Task 6.
 
 - [ ] **Step 1: Write the failing test**
@@ -355,6 +357,7 @@ Create `tests/shlibdeps.bats`:
 #!/usr/bin/env bats
 
 setup() {
+    load "${BATS_TEST_DIRNAME}/../lib/elf.sh"
     load "${BATS_TEST_DIRNAME}/../lib/shlibdeps.sh"
     STAGE=$(mktemp -d)
     mkdir -p "$STAGE/usr/bin" "$STAGE/usr/lib"
@@ -397,6 +400,29 @@ teardown() {
     run kicad_shlibdeps "$STAGE"
     [ "$status" -eq 0 ]
     [ -n "$output" ]
+}
+
+@test "a non-executable dynamically-linked ELF (mode 0644, like a .kiface module) has its NEEDED libs picked up" {
+    # KiCad's kiface plugin modules (_pcbnew.kiface, _eeschema.kiface,
+    # _cvpcb.kiface, ...) install this way: a regular file, mode 0644, no
+    # ".so" in the name, one directory deeper under usr/lib/kicad. Neither a
+    # permission-based nor a name-based filter would select it, so its own
+    # NEEDED entries would never reach dpkg-shlibdeps and the package's
+    # Depends: would silently omit them.
+    mkdir -p "$STAGE/usr/lib/kicad"
+    src=$(mktemp --suffix=.c)
+    echo 'extern int compress(void); int main(void) { return compress(); }' >"$src"
+
+    if ! gcc -o "$STAGE/usr/lib/kicad/_pcbnew.kiface" "$src" -lz 2>/dev/null; then
+        rm -f "$src"
+        skip "zlib1g-dev unavailable; cannot build a kiface-shaped test binary"
+    fi
+    rm -f "$src"
+    chmod 644 "$STAGE/usr/lib/kicad/_pcbnew.kiface"
+
+    run kicad_shlibdeps "$STAGE"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *zlib1g* ]]
 }
 
 @test "a dpkg-shlibdeps failure is not masked as success" {
@@ -443,9 +469,53 @@ SHIM
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `bats tests/shlibdeps.bats`
-Expected: all tests fail — `lib/shlibdeps.sh` does not exist.
+Expected: all tests fail — `lib/elf.sh` and `lib/shlibdeps.sh` do not exist.
 
-- [ ] **Step 3: Write the minimal implementation**
+- [ ] **Step 3: Write the shared ELF-discovery helper**
+
+Create `lib/elf.sh`:
+
+```bash
+#!/usr/bin/env bash
+# Enumerate ELF files under a directory tree by asking `file` what each
+# regular file actually is, not by guessing from its name or permission
+# bits. KiCad's kiface plugin modules (_pcbnew.kiface, _eeschema.kiface,
+# _cvpcb.kiface, _gerbview.kiface, _kipython.kiface, _pcb_calculator.kiface,
+# _pl_editor.kiface) install mode 0644 with no ".so" in the name and carry
+# the bulk of KiCad's code, so a permission- or name-based filter
+# (`-perm -u+x -o -name '*.so*'`) misses every one of them -- both when
+# stripping debug info and when computing shared-library dependencies, so
+# both callers share this scan rather than each re-deriving their own
+# `find`/`file` predicate that could drift out of agreement.
+#
+# `file -N -0` NUL-terminates each filename before its description; a plain
+# `awk -F:` split instead truncates any path containing a colon at the first
+# colon, handing the caller a bogus, nonexistent path.
+
+# kicad_find_elf <dir> <desc-glob>
+# Prints NUL-terminated paths of every regular file under <dir> whose `file`
+# description matches the glob <desc-glob> (e.g. '*ELF*', or
+# '*ELF*not stripped*' to select only unstripped ELF files).
+kicad_find_elf() {
+    local dir=$1 pattern=$2
+    local f desc
+
+    while IFS= read -r -d '' f; do
+        IFS= read -r desc
+        # shellcheck disable=SC2254 # unquoted on purpose: caller-supplied glob
+        case "$desc" in
+            $pattern)
+                printf '%s\0' "$f"
+                ;;
+        esac
+    done < <(
+        find "$dir" -type f -print0 |
+            xargs -0 -r file -N -0
+    )
+}
+```
+
+- [ ] **Step 4: Write the minimal implementation**
 
 Create `lib/shlibdeps.sh`:
 
@@ -462,13 +532,15 @@ Create `lib/shlibdeps.sh`:
 #     kiface plugin modules a directory deeper, under usr/lib/kicad, so that path
 #     is added too -- without it those modules' own NEEDED libs go unresolved.
 #
-# The ELF list comes from `file -N -0`, which NUL-terminates each filename
-# before its description. A plain `awk -F:` split instead truncates any path
-# containing a colon at the first colon, feeding dpkg-shlibdeps a bogus path.
+# ELF discovery is shared with lib/stage.sh -- see lib/elf.sh. Every regular
+# file is tested, not just executable ones or ones named *.so*: those kiface
+# modules install mode 0644 with no ".so" in the name, so a permission- or
+# name-based filter never sees them, and their own NEEDED libraries never
+# reach dpkg-shlibdeps.
 
 kicad_shlibdeps() {
     local stage=$1
-    local workdir out err rc f desc
+    local workdir out err rc f
     local elves=()
 
     if [ ! -d "$stage" ]; then
@@ -477,16 +549,8 @@ kicad_shlibdeps() {
     fi
 
     while IFS= read -r -d '' f; do
-        IFS= read -r desc
-        case "$desc" in
-            *'ELF'*)
-                elves+=("$f")
-                ;;
-        esac
-    done < <(
-        find "$stage" -type f \( -perm -u+x -o -name '*.so*' \) -print0 |
-            xargs -0 -r file -N -0
-    )
+        elves+=("$f")
+    done < <(kicad_find_elf "$stage" '*ELF*')
 
     if [ ${#elves[@]} -eq 0 ]; then
         echo "kicad_shlibdeps: no ELF files found under $stage" >&2
@@ -529,20 +593,20 @@ kicad_shlibdeps() {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `bats tests/shlibdeps.bats`
-Expected: `7 tests, 0 failures`.
+Expected: `8 tests, 0 failures`.
 
-- [ ] **Step 5: Lint**
+- [ ] **Step 6: Lint**
 
-Run: `shellcheck lib/shlibdeps.sh && shfmt -i 4 -ci -d lib/shlibdeps.sh`
+Run: `shellcheck lib/elf.sh lib/shlibdeps.sh && shfmt -i 4 -ci -d lib/elf.sh lib/shlibdeps.sh`
 Expected: no output.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add lib/shlibdeps.sh tests/shlibdeps.bats
+git add lib/elf.sh lib/shlibdeps.sh tests/shlibdeps.bats
 git commit -m "Add dpkg-shlibdeps wrapper handling missing control and private libs"
 ```
 
@@ -554,7 +618,7 @@ git commit -m "Add dpkg-shlibdeps wrapper handling missing control and private l
 - Create: `lib/stage.sh`, `tests/stage.bats`
 
 **Interfaces:**
-- Consumes: nothing
+- Consumes: `lib/elf.sh` (`kicad_find_elf`), created in Task 3. Not recreated here.
 - Produces: `kicad_strip_tree <dir>` → strips every ELF under `<dir>`, echoes the count stripped,
   and returns non-zero if `strip` failed on any file (all matching files are still attempted).
 
@@ -570,6 +634,7 @@ Create `tests/stage.bats`:
 #!/usr/bin/env bats
 
 setup() {
+    load "${BATS_TEST_DIRNAME}/../lib/elf.sh"
     load "${BATS_TEST_DIRNAME}/../lib/stage.sh"
     STAGE=$(mktemp -d)
     STAGE3D=$(mktemp -d)
@@ -615,6 +680,20 @@ teardown() {
     [ "$status" -ne 0 ]
 }
 
+@test "a non-executable ELF (mode 0644, like a .kiface module) is stripped and counted" {
+    # KiCad's plugin modules (_pcbnew.kiface, _eeschema.kiface, ...) install
+    # this way: a regular file, no execute bit, no ".so" in the name.
+    printf 'int main(void){return 0;}\n' >"$STAGE/m.c"
+    gcc -g -o "$STAGE/usr/bin/_pcbnew.kiface" "$STAGE/m.c"
+    chmod 644 "$STAGE/usr/bin/_pcbnew.kiface"
+    before=$(stat -c %s "$STAGE/usr/bin/_pcbnew.kiface")
+    run kicad_strip_tree "$STAGE"
+    [ "$status" -eq 0 ]
+    [ "$output" -ge 1 ]
+    after=$(stat -c %s "$STAGE/usr/bin/_pcbnew.kiface")
+    [ "$after" -lt "$before" ]
+}
+
 @test "a filename containing a colon is still stripped and counted" {
     printf 'int main(void){return 0;}\n' >"$STAGE/c.c"
     gcc -g -o "$STAGE/usr/bin/kicad:helper" "$STAGE/c.c"
@@ -646,14 +725,11 @@ Create `lib/stage.sh`:
 # with objcopy --only-keep-debug, indexes it by build-id for debuginfod, then
 # runs strip --strip-unneeded over every ELF. Debug info is ~94% of binary size.
 #
-# The ELF list comes from `file -N -0`, which NUL-terminates each filename
-# before its description. A plain `awk -F:` split instead truncates any path
-# containing a colon at the first colon, handing strip a bogus, nonexistent
-# path -- which then fails silently unless every strip failure is checked.
+# ELF discovery is shared with lib/shlibdeps.sh -- see lib/elf.sh.
 
 kicad_strip_tree() {
     local dir=$1
-    local count=0 failed=0 f desc
+    local count=0 failed=0 f
 
     if [ ! -d "$dir" ]; then
         echo "kicad_strip_tree: no such directory: $dir" >&2
@@ -661,21 +737,13 @@ kicad_strip_tree() {
     fi
 
     while IFS= read -r -d '' f; do
-        IFS= read -r desc
-        case "$desc" in
-            *'ELF'*'not stripped'*)
-                if strip --strip-unneeded "$f"; then
-                    count=$((count + 1))
-                else
-                    echo "kicad_strip_tree: strip failed on: $f" >&2
-                    failed=1
-                fi
-                ;;
-        esac
-    done < <(
-        find "$dir" -type f \( -perm -u+x -o -name '*.so*' \) -print0 |
-            xargs -0 -r file -N -0
-    )
+        if strip --strip-unneeded "$f"; then
+            count=$((count + 1))
+        else
+            echo "kicad_strip_tree: strip failed on: $f" >&2
+            failed=1
+        fi
+    done < <(kicad_find_elf "$dir" '*ELF*not stripped*')
 
     printf '%s\n' "$count"
 
@@ -686,7 +754,7 @@ kicad_strip_tree() {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `bats tests/stage.bats`
-Expected: `5 tests, 0 failures`.
+Expected: `6 tests, 0 failures`.
 
 - [ ] **Step 5: Lint**
 
@@ -833,7 +901,7 @@ git commit -m "Add control templates, ldconfig trigger and migration warnings"
 - Create: `build-kicad-deb.sh`
 
 **Interfaces:**
-- Consumes: `lib/version.sh`, `lib/shlibdeps.sh`, `lib/stage.sh`, `packaging/*`
+- Consumes: `lib/version.sh`, `lib/elf.sh`, `lib/shlibdeps.sh`, `lib/stage.sh`, `packaging/*`
 - Produces: `kicad_<version>_amd64.deb` and `kicad-packages3d_<version>_all.deb` in the invocation directory.
 
 - [ ] **Step 1: Write the script**
@@ -842,7 +910,7 @@ Create `build-kicad-deb.sh`:
 
 ```bash
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -855,6 +923,8 @@ ORIG_DIR=$(pwd)
 
 # shellcheck source=lib/version.sh
 . "$SCRIPT_DIR/lib/version.sh"
+# shellcheck source=lib/elf.sh
+. "$SCRIPT_DIR/lib/elf.sh"
 # shellcheck source=lib/shlibdeps.sh
 . "$SCRIPT_DIR/lib/shlibdeps.sh"
 # shellcheck source=lib/stage.sh
@@ -865,7 +935,7 @@ echo "================================"
 
 echo -e "${YELLOW}Checking dependencies...${NC}"
 for tool in west cmake ninja g++ dpkg-deb dpkg-shlibdeps git strip file; do
-    if ! command -v "$tool" > /dev/null 2>&1; then
+    if ! command -v "$tool" >/dev/null 2>&1; then
         echo -e "${RED}Error: $tool is not installed${NC}"
         echo "Install build tooling with: sudo apt-get install -y \\"
         echo "    build-essential cmake ninja-build ccache dpkg-dev git binutils"
@@ -881,18 +951,63 @@ if [ "${ID:-}" != "ubuntu" ] || [ "${VERSION_ID:-}" != "26.04" ]; then
     exit 1
 fi
 
-STAGE_KICAD=$(mktemp -d)
-STAGE_3D=$(mktemp -d)
-cleanup() { rm -rf "$STAGE_KICAD" "$STAGE_3D"; }
+# Library repos are west-managed source checkouts, not build areas: configuring
+# a build/ directory inside one leaves it with untracked cruft `git status`
+# reports, and any state a prior run left behind there can break a later run
+# in a way whose error points at the source checkout instead of the real
+# cause. Give the script a build area of its own, outside every checkout.
+LIB_BUILD_ROOT="$WORKSPACE/.build"
+mkdir -p "$LIB_BUILD_ROOT"
+
+# /tmp on this machine is tmpfs (RAM-backed). Staging holds the full KiCad
+# install plus several GB of 3D models, and dpkg-deb needs scratch space
+# again on top of that while assembling control.tar/data.tar -- both stages
+# honor TMPDIR (mktemp(1), dpkg-deb(1)). Point everything at disk instead,
+# next to the library build dirs.
+export TMPDIR="$LIB_BUILD_ROOT"
+STAGE_KICAD=$(mktemp -d -p "$LIB_BUILD_ROOT" stage-kicad-XXXXXX)
+STAGE_3D=$(mktemp -d -p "$LIB_BUILD_ROOT" stage-3d-XXXXXX)
+
+CURRENT_STAGE="initializing"
+stage() {
+    CURRENT_STAGE=$1
+    echo -e "${YELLOW}${1}...${NC}"
+}
+
+# `set -e` routes a failing command here first, while $CURRENT_STAGE and
+# $LINENO still identify what broke; the EXIT trap below then decides what to
+# do with the staging trees based on the exit status this leaves behind.
+on_error() {
+    local line=$1
+    echo -e "${RED}Error: build failed during '${CURRENT_STAGE}' (line ${line})${NC}" >&2
+}
+trap 'on_error $LINENO' ERR
+
+# Runs on every exit, success or failure. A failure must not delete the
+# staging trees -- they are the only evidence of what the failed stage
+# produced -- so capture the real exit status before any command in this
+# function (even echo) can overwrite it, and only clean up once that status
+# is confirmed to be success.
+cleanup() {
+    local exit_code=$?
+    if [ "$exit_code" -eq 0 ]; then
+        rm -rf "$STAGE_KICAD" "$STAGE_3D"
+    else
+        echo -e "${YELLOW}Staging directories preserved for inspection:${NC}" >&2
+        echo "  kicad:            $STAGE_KICAD" >&2
+        echo "  kicad-packages3d: $STAGE_3D" >&2
+    fi
+    exit "$exit_code"
+}
 trap cleanup EXIT
 
-echo -e "${YELLOW}Syncing repositories...${NC}"
+stage "Syncing repositories"
 (cd "$WORKSPACE" && west update)
 
 VERSION=$(kicad_deb_version "$(git -C "$WORKSPACE/kicad" describe --tags)")
 echo -e "${GREEN}Package version: $VERSION${NC}"
 
-echo -e "${YELLOW}Configuring...${NC}"
+stage "Configuring KiCad"
 cmake -S "$WORKSPACE/kicad" -B "$WORKSPACE/build" -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_INSTALL_PREFIX=/usr \
@@ -904,56 +1019,62 @@ cmake -S "$WORKSPACE/kicad" -B "$WORKSPACE/build" -G Ninja \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache \
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-echo -e "${YELLOW}Building (this takes 30-50 minutes)...${NC}"
+stage "Building KiCad (this takes 30-50 minutes)"
 cmake --build "$WORKSPACE/build" -j"$(nproc)"
 
-echo -e "${YELLOW}Staging KiCad...${NC}"
+stage "Staging KiCad"
 DESTDIR=$STAGE_KICAD cmake --install "$WORKSPACE/build"
 
-echo -e "${YELLOW}Staging libraries...${NC}"
 # Symbols ship as unpacked .kicad_symdir directories; packing is off to match
 # what the official build installs.
-cmake -S "$WORKSPACE/kicad-symbols" -B "$WORKSPACE/kicad-symbols/build" -G Ninja \
+stage "Staging kicad-symbols"
+cmake -S "$WORKSPACE/kicad-symbols" -B "$LIB_BUILD_ROOT/kicad-symbols" -G Ninja \
     -DCMAKE_INSTALL_PREFIX=/usr -DKICAD_PACK_SYM_LIBRARIES=OFF
-DESTDIR=$STAGE_KICAD cmake --install "$WORKSPACE/kicad-symbols/build"
+DESTDIR=$STAGE_KICAD cmake --install "$LIB_BUILD_ROOT/kicad-symbols"
 
 for lib in kicad-footprints kicad-templates; do
-    cmake -S "$WORKSPACE/$lib" -B "$WORKSPACE/$lib/build" -G Ninja \
+    stage "Staging $lib"
+    cmake -S "$WORKSPACE/$lib" -B "$LIB_BUILD_ROOT/$lib" -G Ninja \
         -DCMAKE_INSTALL_PREFIX=/usr
-    DESTDIR=$STAGE_KICAD cmake --install "$WORKSPACE/$lib/build"
+    DESTDIR=$STAGE_KICAD cmake --install "$LIB_BUILD_ROOT/$lib"
 done
 
 # The models go straight into their own tree: this repo's CMake installs only
 # the shape directories, so no post-hoc move is needed.
-echo -e "${YELLOW}Staging 3D models...${NC}"
-cmake -S "$WORKSPACE/kicad-packages3D" -B "$WORKSPACE/kicad-packages3D/build" \
+stage "Staging 3D models"
+cmake -S "$WORKSPACE/kicad-packages3D" -B "$LIB_BUILD_ROOT/kicad-packages3D" \
     -G Ninja -DCMAKE_INSTALL_PREFIX=/usr
-DESTDIR=$STAGE_3D cmake --install "$WORKSPACE/kicad-packages3D/build"
+DESTDIR=$STAGE_3D cmake --install "$LIB_BUILD_ROOT/kicad-packages3D"
 
 if [ -e "$STAGE_KICAD/usr/share/kicad/3dmodels" ]; then
     echo -e "${RED}Error: 3D models leaked into the main package tree${NC}"
     exit 1
 fi
 
-echo -e "${YELLOW}Stripping debug info...${NC}"
+stage "Stripping debug info"
 stripped=$(kicad_strip_tree "$STAGE_KICAD")
 echo "  stripped $stripped ELF files"
 
-echo -e "${YELLOW}Computing dependencies...${NC}"
+stage "Computing dependencies"
 DEPENDS=$(kicad_shlibdeps "$STAGE_KICAD")
 
 build_package() {
-    local name=$1 stage=$2 arch=$3
-    local size pkgdir
+    local name=$1 pkg_stage=$2 arch=$3
+    local size pkgdir control
 
-    size=$(du -sk "$stage/usr" | cut -f1)
-    pkgdir="$stage/DEBIAN"
+    size=$(du -sk "$pkg_stage/usr" | cut -f1)
+    pkgdir="$pkg_stage/DEBIAN"
     mkdir -p "$pkgdir"
 
-    sed -e "s|@VERSION@|$VERSION|g" \
-        -e "s|@INSTALLED_SIZE@|$size|g" \
-        -e "s|@DEPENDS@|$DEPENDS|g" \
-        "$SCRIPT_DIR/packaging/$name.control.in" > "$pkgdir/control"
+    # Native substitution, not sed: dpkg-shlibdeps legitimately emits `|` for
+    # alternative dependencies (e.g. "libglu1-mesa | libglu1"), which collides
+    # with a `|`-delimited sed s/// the moment such a package appears in
+    # $DEPENDS. Bash's ${var//pat/repl} has no delimiter to collide with.
+    control=$(<"$SCRIPT_DIR/packaging/$name.control.in")
+    control=${control//@VERSION@/$VERSION}
+    control=${control//@INSTALLED_SIZE@/$size}
+    control=${control//@DEPENDS@/$DEPENDS}
+    printf '%s\n' "$control" >"$pkgdir/control"
 
     # Only the kicad package has these; the models package is pure data and
     # correctly ships none.
@@ -962,11 +1083,11 @@ build_package() {
     [ -f "$SCRIPT_DIR/packaging/$name.triggers" ] &&
         install -m 0644 "$SCRIPT_DIR/packaging/$name.triggers" "$pkgdir/triggers"
 
-    fakeroot dpkg-deb --build "$stage" \
+    fakeroot dpkg-deb --build "$pkg_stage" \
         "$ORIG_DIR/${name}_${VERSION}_${arch}.deb"
 }
 
-echo -e "${YELLOW}Building packages...${NC}"
+stage "Building packages"
 build_package kicad "$STAGE_KICAD" amd64
 build_package kicad-packages3d "$STAGE_3D" all
 
@@ -1156,7 +1277,7 @@ They are re-seeded against the new prefix on next launch.
 - [ ] **Step 4: Verify the tests referenced in the README actually pass**
 
 Run: `bats tests/`
-Expected: `26 tests, 0 failures` across the three test files (14 version, 7 shlibdeps, 5 stage).
+Expected: `28 tests, 0 failures` across the three test files (14 version, 8 shlibdeps, 6 stage).
 
 - [ ] **Step 5: Commit**
 

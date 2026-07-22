@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -12,6 +12,8 @@ ORIG_DIR=$(pwd)
 
 # shellcheck source=lib/version.sh
 . "$SCRIPT_DIR/lib/version.sh"
+# shellcheck source=lib/elf.sh
+. "$SCRIPT_DIR/lib/elf.sh"
 # shellcheck source=lib/shlibdeps.sh
 . "$SCRIPT_DIR/lib/shlibdeps.sh"
 # shellcheck source=lib/stage.sh

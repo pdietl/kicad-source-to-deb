@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 
 setup() {
+    load "${BATS_TEST_DIRNAME}/../lib/elf.sh"
     load "${BATS_TEST_DIRNAME}/../lib/shlibdeps.sh"
     STAGE=$(mktemp -d)
     mkdir -p "$STAGE/usr/bin" "$STAGE/usr/lib"
@@ -43,6 +44,29 @@ teardown() {
     run kicad_shlibdeps "$STAGE"
     [ "$status" -eq 0 ]
     [ -n "$output" ]
+}
+
+@test "a non-executable dynamically-linked ELF (mode 0644, like a .kiface module) has its NEEDED libs picked up" {
+    # KiCad's kiface plugin modules (_pcbnew.kiface, _eeschema.kiface,
+    # _cvpcb.kiface, ...) install this way: a regular file, mode 0644, no
+    # ".so" in the name, one directory deeper under usr/lib/kicad. Neither a
+    # permission-based nor a name-based filter would select it, so its own
+    # NEEDED entries would never reach dpkg-shlibdeps and the package's
+    # Depends: would silently omit them.
+    mkdir -p "$STAGE/usr/lib/kicad"
+    src=$(mktemp --suffix=.c)
+    echo 'extern int compress(void); int main(void) { return compress(); }' >"$src"
+
+    if ! gcc -o "$STAGE/usr/lib/kicad/_pcbnew.kiface" "$src" -lz 2>/dev/null; then
+        rm -f "$src"
+        skip "zlib1g-dev unavailable; cannot build a kiface-shaped test binary"
+    fi
+    rm -f "$src"
+    chmod 644 "$STAGE/usr/lib/kicad/_pcbnew.kiface"
+
+    run kicad_shlibdeps "$STAGE"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *zlib1g* ]]
 }
 
 @test "a dpkg-shlibdeps failure is not masked as success" {

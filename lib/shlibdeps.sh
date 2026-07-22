@@ -10,13 +10,15 @@
 #     kiface plugin modules a directory deeper, under usr/lib/kicad, so that path
 #     is added too -- without it those modules' own NEEDED libs go unresolved.
 #
-# The ELF list comes from `file -N -0`, which NUL-terminates each filename
-# before its description. A plain `awk -F:` split instead truncates any path
-# containing a colon at the first colon, feeding dpkg-shlibdeps a bogus path.
+# ELF discovery is shared with lib/stage.sh -- see lib/elf.sh. Every regular
+# file is tested, not just executable ones or ones named *.so*: those kiface
+# modules install mode 0644 with no ".so" in the name, so a permission- or
+# name-based filter never sees them, and their own NEEDED libraries never
+# reach dpkg-shlibdeps.
 
 kicad_shlibdeps() {
     local stage=$1
-    local workdir out err rc f desc
+    local workdir out err rc f
     local elves=()
 
     if [ ! -d "$stage" ]; then
@@ -25,16 +27,8 @@ kicad_shlibdeps() {
     fi
 
     while IFS= read -r -d '' f; do
-        IFS= read -r desc
-        case "$desc" in
-            *'ELF'*)
-                elves+=("$f")
-                ;;
-        esac
-    done < <(
-        find "$stage" -type f \( -perm -u+x -o -name '*.so*' \) -print0 |
-            xargs -0 -r file -N -0
-    )
+        elves+=("$f")
+    done < <(kicad_find_elf "$stage" '*ELF*')
 
     if [ ${#elves[@]} -eq 0 ]; then
         echo "kicad_shlibdeps: no ELF files found under $stage" >&2
