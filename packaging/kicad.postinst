@@ -1,0 +1,23 @@
+#!/bin/sh
+set -e
+
+# A prior source install under /usr/local shadows this package: /usr/local/bin
+# precedes /usr/bin on the default PATH, so the old binary keeps running.
+if [ -x /usr/local/bin/kicad ]; then
+    echo "WARNING: /usr/local/bin/kicad exists and shadows /usr/bin/kicad." >&2
+    echo "         Remove the old source install (uninstall-usr-local.sh)." >&2
+fi
+
+# KiCad writes an absolute path into the user's global library table on first
+# run and never revisits it. A table pointing outside /usr leaves the library
+# list silently empty -- the loader logs a trace and shows no dialog.
+for tbl in /home/*/.config/kicad/*/sym-lib-table; do
+    [ -f "$tbl" ] || continue
+    if grep -q 'uri "/' "$tbl" 2>/dev/null && ! grep -q 'uri "/usr/share/kicad' "$tbl" 2>/dev/null; then
+        echo "WARNING: $tbl points outside /usr/share/kicad." >&2
+        echo "         Delete sym-lib-table, fp-lib-table and" >&2
+        echo "         design-block-lib-table from that profile to re-seed them." >&2
+    fi
+done
+
+exit 0

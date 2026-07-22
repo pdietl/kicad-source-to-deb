@@ -1,0 +1,14 @@
+Package: kicad-packages3d
+Version: @VERSION@
+Section: electronics
+Priority: optional
+Architecture: all
+Installed-Size: @INSTALLED_SIZE@
+Depends: kicad (= @VERSION@)
+Maintainer: Pete Dietl <petedietl@gmail.com>
+Homepage: https://www.kicad.org
+Description: 3D component models for KiCad
+ STEP models rendered by KiCad's 3D viewer and emitted by its STEP and VRML
+ exporters. KiCad is fully usable without this package: the PCB editor canvas
+ is two-dimensional, and the 3D viewer still renders board geometry, just
+ without component bodies.

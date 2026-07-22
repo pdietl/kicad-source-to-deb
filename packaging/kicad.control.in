@@ -1,0 +1,20 @@
+Package: kicad
+Version: @VERSION@
+Section: electronics
+Priority: optional
+Architecture: amd64
+Installed-Size: @INSTALLED_SIZE@
+Depends: @DEPENDS@
+Recommends: kicad-packages3d
+Conflicts: kicad-symbols, kicad-footprints, kicad-templates
+Provides: kicad-symbols, kicad-footprints, kicad-templates
+Replaces: kicad-symbols, kicad-footprints, kicad-templates
+Maintainer: Pete Dietl <petedietl@gmail.com>
+Homepage: https://www.kicad.org
+Description: Electronic schematic and PCB design software
+ KiCad is a cross-platform suite for electronic design automation, covering
+ schematic capture, PCB layout, gerber generation and 3D visualisation.
+ .
+ Built from source at tag 10.0.5-rc1 against this machine's system libraries,
+ with symbol, footprint and project-template libraries included. Install
+ kicad-packages3d for the 3D component models.
