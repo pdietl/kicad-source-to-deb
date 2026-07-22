@@ -563,7 +563,7 @@ git commit -m "Add staging helpers for stripping and 3D model split"
 ### Task 5: Packaging templates and maintainer scripts
 
 **Files:**
-- Create: `packaging/kicad.control.in`, `packaging/kicad-packages3d.control.in`, `packaging/kicad.postinst`, `packaging/kicad.postrm`, `packaging/kicad-packages3d.postinst`, `packaging/kicad-packages3d.postrm`
+- Create: `packaging/kicad.control.in`, `packaging/kicad-packages3d.control.in`, `packaging/kicad.postinst`, `packaging/kicad.triggers`
 
 **Interfaces:**
 - Consumes: nothing
@@ -1008,7 +1008,7 @@ They are re-seeded against the new prefix on next launch.
 ## Tests
 
     bats tests/
-    shellcheck *.sh lib/*.sh packaging/*.postinst packaging/*.postrm
+    shellcheck *.sh lib/*.sh packaging/kicad.postinst
 ```
 
 - [ ] **Step 4: Verify the tests referenced in the README actually pass**
