@@ -61,6 +61,42 @@ teardown() {
     [ "$output" = "$PREFIX/bin/already-gone" ]
 }
 
+@test "a manifest's final line without trailing newline is still processed" {
+    # The standard shell gotcha: `while IFS= read -r f; do ... done <file`
+    # skips the final line if it lacks a trailing newline because read returns
+    # non-zero on EOF even though it populated $f. This test ensures the fix
+    # (`while IFS= read -r f || [ -n "$f" ]; do`) actually works.
+    manifest=$(mktemp)
+    # Use printf (not echo) to avoid adding a trailing newline
+    printf '%s\n%s' "$PREFIX/bin/existing1" "$PREFIX/bin/final-no-newline" >"$manifest"
+
+    # Create the files to remove
+    mkdir -p "$PREFIX/bin"
+    touch "$PREFIX/bin/existing1" "$PREFIX/bin/final-no-newline"
+
+    # Run the uninstall script with the manifest
+    run bash -c "
+        . lib/uninstall.sh
+        rejected=0
+        while IFS= read -r f || [ -n \"\$f\" ]; do
+            [ -n \"\$f\" ] || continue
+            if resolved=\$(kicad_uninstall_resolve_under_prefix \"\$f\" \"$PREFIX\"); then
+                rm -f \"\$resolved\"
+            else
+                rejected=1
+            fi
+        done <\"$manifest\"
+        exit \$rejected
+    "
+
+    [ "$status" -eq 0 ]
+    # Both files should be gone
+    [ ! -e "$PREFIX/bin/existing1" ]
+    [ ! -e "$PREFIX/bin/final-no-newline" ]
+
+    rm -f "$manifest"
+}
+
 @test "desktop-integration removal is a no-op without error on an empty prefix" {
     run kicad_uninstall_remove_desktop_integration "$PREFIX"
     [ "$status" -eq 0 ]

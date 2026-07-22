@@ -28,7 +28,7 @@ if [ -n "$MANIFEST" ]; then
 
     echo "Removing files listed in $MANIFEST"
     rejected=0
-    while IFS= read -r f; do
+    while IFS= read -r f || [ -n "$f" ]; do
         [ -n "$f" ] || continue
         if resolved=$(kicad_uninstall_resolve_under_prefix "$f" "$PREFIX"); then
             rm -f "$resolved"
