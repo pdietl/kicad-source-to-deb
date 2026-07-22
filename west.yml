@@ -1,0 +1,37 @@
+manifest:
+  self:
+    path: kicad-source-to-deb
+
+  remotes:
+    - name: kicad
+      url-base: https://gitlab.com/kicad
+
+  defaults:
+    remote: kicad
+
+  projects:
+    # Full history deliberately: the build derives its version string from
+    # `git describe`, which needs accurate commit counts.
+    - name: kicad
+      repo-path: code/kicad
+      revision: 10.0.5-rc1
+
+    - name: kicad-symbols
+      repo-path: libraries/kicad-symbols
+      revision: 10.0.5-rc1
+      clone-depth: 1
+
+    - name: kicad-footprints
+      repo-path: libraries/kicad-footprints
+      revision: 10.0.5-rc1
+      clone-depth: 1
+
+    - name: kicad-templates
+      repo-path: libraries/kicad-templates
+      revision: 10.0.5-rc1
+      clone-depth: 1
+
+    - name: kicad-packages3D
+      repo-path: libraries/kicad-packages3D
+      revision: 10.0.5-rc1
+      clone-depth: 1
