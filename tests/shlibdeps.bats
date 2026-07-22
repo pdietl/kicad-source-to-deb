@@ -120,3 +120,32 @@ SHIM
 
     [ "$status" -ne 0 ]
 }
+
+@test "a private library under the multiarch dir is resolved, not reported missing" {
+    # KiCad installs its own libraries under usr/lib/<triplet>, its 3D plugins
+    # deeper still, and its kiface modules in usr/bin -- and -l does not
+    # recurse. Naming the -l directories instead of discovering them left
+    # every one of those unmatched, and dpkg-shlibdeps aborts the build with
+    # "cannot find library" for the package's own libraries.
+    triplet=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
+    libdir="$STAGE/usr/lib/$triplet"
+    mkdir -p "$libdir"
+
+    src=$(mktemp --suffix=.c)
+    echo 'int kicad_private(void) { return 1; }' >"$src"
+    gcc -shared -fPIC -Wl,-soname,libkiapi.so.10 -o "$libdir/libkiapi.so.10.0.5" "$src"
+    ln -s libkiapi.so.10.0.5 "$libdir/libkiapi.so.10"
+
+    # A consumer that NEEDs it, placed where the kiface modules go and with
+    # no RPATH, so it is only resolvable via -l.
+    echo 'extern int kicad_private(void); int main(void){ return kicad_private(); }' >"$src"
+    gcc -o "$STAGE/usr/bin/_eeschema.kiface" "$src" \
+        -L"$libdir" -l:libkiapi.so.10.0.5 -Wl,-rpath-link,"$libdir"
+    chmod 644 "$STAGE/usr/bin/_eeschema.kiface"
+    rm -f "$src"
+
+    run kicad_shlibdeps "$STAGE"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"cannot find library"* ]]
+    [[ "$output" == *libc6* ]]
+}

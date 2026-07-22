@@ -5,10 +5,16 @@
 # package, both confirmed by running it:
 #   - it refuses to start without a debian/control file, so one is synthesised;
 #   - it treats a library belonging to no package as fatal, which is exactly what
-#     KiCad's own libkicommon.so is, so -l points it at the staged lib directory
-#     and --ignore-missing-info downgrades the failure. KiCad also installs its
-#     kiface plugin modules a directory deeper, under usr/lib/kicad, so that path
-#     is added too -- without it those modules' own NEEDED libs go unresolved.
+#     KiCad's own libkicommon.so and libkiapi.so are, so -l points it at the
+#     directories holding them and --ignore-missing-info downgrades the failure.
+#
+# Those -l directories are discovered from the tree rather than named. -l does
+# not recurse, and the layout is not one path: the shared libraries land under
+# the multiarch triplet (usr/lib/x86_64-linux-gnu), the 3D plugins deeper still,
+# and the kiface modules in usr/bin. A named path that stops matching the layout
+# contributes nothing and reports nothing, leaving dpkg-shlibdeps unable to
+# resolve the package's own libraries -- the same failure that comes of guessing
+# at ELF files by name or permission instead of asking what they are.
 #
 # ELF discovery is shared with lib/stage.sh -- see lib/elf.sh. Every regular
 # file is tested, not just executable ones or ones named *.so*: those kiface
@@ -18,8 +24,9 @@
 
 kicad_shlibdeps() {
     local stage=$1
-    local workdir out err rc f list
-    local elves=()
+    local workdir out err rc f d list
+    local elves=() libdirs=()
+    local -A seen=()
 
     if [ ! -d "$stage" ]; then
         echo "kicad_shlibdeps: no such stage directory: $stage" >&2
@@ -49,6 +56,29 @@ kicad_shlibdeps() {
         return 1
     fi
 
+    # Selecting on the description rather than filtering $elves by name keeps
+    # PIE executables out ("pie executable", not "shared object") while still
+    # catching the kiface modules, which are shared objects with neither a
+    # .so name nor the executable bit.
+    list=$(mktemp)
+    if ! kicad_find_elf "$stage" '*ELF*shared object*' >"$list"; then
+        echo "kicad_shlibdeps: shared-object enumeration under $stage failed" >&2
+        rm -f "$list"
+        return 1
+    fi
+
+    while IFS= read -r -d '' f; do
+        d=$(dirname "$f")
+        if [ -z "${seen[$d]:-}" ]; then
+            seen[$d]=1
+            libdirs+=("-l$d")
+        fi
+    done <"$list"
+    rm -f "$list"
+
+    # No shared objects means no -l is needed, which is a legitimate tree, not
+    # an error: dpkg-shlibdeps stays the authority on what it cannot resolve
+    # and fails loudly on a library it cannot place.
     workdir=$(mktemp -d)
     mkdir -p "$workdir/debian"
     printf 'Source: kicad\n\nPackage: kicad\nArchitecture: amd64\n' \
@@ -58,9 +88,7 @@ kicad_shlibdeps() {
     out=$(
         cd "$workdir" &&
             dpkg-shlibdeps -O --ignore-missing-info \
-                -l"$stage/usr/lib" \
-                -l"$stage/usr/lib/kicad" \
-                "${elves[@]}" 2>"$err"
+                "${libdirs[@]}" "${elves[@]}" 2>"$err"
     )
     rc=$?
     rm -rf "$workdir"
