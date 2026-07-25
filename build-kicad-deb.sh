@@ -32,7 +32,7 @@ echo -e "${YELLOW}Checking dependencies...${NC}"
 # 30-50 minutes in), fakeroot only at packaging time in build_package(). A
 # missing tool discovered at either point burns the whole build for
 # something this loop already checks everything else for.
-for tool in west cmake ninja g++ dpkg-deb dpkg-shlibdeps git strip file fakeroot ccache; do
+for tool in west cmake ninja g++ dpkg-deb dpkg-shlibdeps git strip objcopy readelf file fakeroot ccache; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo -e "${RED}Error: $tool is not installed${NC}"
         echo "Install build tooling with: sudo apt-get install -y \\"
@@ -65,10 +65,11 @@ mkdir -p "$LIB_BUILD_ROOT"
 export TMPDIR="$WORKSPACE"
 STAGE_KICAD=$(mktemp -d -p "$WORKSPACE" stage-kicad-XXXXXX)
 STAGE_3D=$(mktemp -d -p "$WORKSPACE" stage-3d-XXXXXX)
+STAGE_DBG=$(mktemp -d -p "$WORKSPACE" stage-dbg-XXXXXX)
 # mktemp -d makes these mode 0700. dpkg-deb -x later chmods the extraction
 # destination to match the archive's own "./" entry, so a 0700 staging root
 # would make every install of this package unreadable to non-root users.
-chmod 0755 "$STAGE_KICAD" "$STAGE_3D"
+chmod 0755 "$STAGE_KICAD" "$STAGE_3D" "$STAGE_DBG"
 
 CURRENT_STAGE="initializing"
 stage() {
@@ -93,11 +94,12 @@ trap 'on_error $LINENO' ERR
 cleanup() {
     local exit_code=$?
     if [ "$exit_code" -eq 0 ]; then
-        rm -rf "$STAGE_KICAD" "$STAGE_3D"
+        rm -rf "$STAGE_KICAD" "$STAGE_3D" "$STAGE_DBG"
     else
         echo -e "${YELLOW}Staging directories preserved for inspection:${NC}" >&2
         echo "  kicad:            $STAGE_KICAD" >&2
         echo "  kicad-packages3d: $STAGE_3D" >&2
+        echo "  kicad-dbgsym:     $STAGE_DBG" >&2
     fi
     exit "$exit_code"
 }
@@ -189,9 +191,13 @@ if [ -e "$STAGE_KICAD/usr/share/kicad/3dmodels" ]; then
     exit 1
 fi
 
-stage "Stripping debug info"
-stripped=$(kicad_strip_tree "$STAGE_KICAD")
-echo "  stripped $stripped ELF files"
+stage "Separating debug info"
+split=$(kicad_split_debug "$STAGE_KICAD" "$STAGE_DBG/usr/lib/debug")
+echo "  separated debug info for $split ELF files"
+# One .debug file per ELF, so this floor counts binaries rather than the
+# thousands of data files the library trees hold -- a far smaller number than
+# the checks above, kept the same proportional distance below a real build.
+kicad_assert_min_files "$STAGE_DBG/usr/lib/debug" 10 "kicad-dbgsym"
 
 stage "Computing dependencies"
 DEPENDS=$(kicad_shlibdeps "$STAGE_KICAD")
@@ -241,6 +247,7 @@ build_package() {
 stage "Building packages"
 build_package kicad "$STAGE_KICAD" amd64
 build_package kicad-packages3d "$STAGE_3D" all
+build_package kicad-dbgsym "$STAGE_DBG" amd64
 
 echo -e "${GREEN}================================${NC}"
 echo -e "${GREEN}Success!${NC}"
@@ -249,3 +256,7 @@ echo ""
 echo "To install:"
 echo "  sudo apt install $ORIG_DIR/kicad_${VERSION}_amd64.deb \\"
 echo "                   $ORIG_DIR/kicad-packages3d_${VERSION}_all.deb"
+echo ""
+echo "Debug symbols are a separate, much larger package. Install it only when"
+echo "investigating a crash or a hang; gdb picks it up with no configuration:"
+echo "  sudo apt install $ORIG_DIR/kicad-dbgsym_${VERSION}_amd64.deb"

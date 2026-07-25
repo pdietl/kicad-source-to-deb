@@ -5,6 +5,7 @@ setup() {
     load "${BATS_TEST_DIRNAME}/../lib/stage.sh"
     STAGE=$(mktemp -d)
     STAGE3D=$(mktemp -d)
+    DEBUGDIR=$(mktemp -d)
     mkdir -p "$STAGE/usr/bin" "$STAGE/usr/share/kicad/3dmodels/Resistor.3dshapes"
     # Compile a test binary with debug info to ensure we have something to strip
     printf 'int main(void){return 0;}\n' >"$STAGE/test.c"
@@ -13,27 +14,81 @@ setup() {
 }
 
 teardown() {
-    rm -rf "$STAGE" "$STAGE3D"
+    rm -rf "$STAGE" "$STAGE3D" "$DEBUGDIR"
 }
 
-@test "stripping reports the number of ELF files processed" {
-    run kicad_strip_tree "$STAGE"
+@test "splitting reports the number of ELF files processed" {
+    run kicad_split_debug "$STAGE" "$DEBUGDIR"
     [ "$status" -eq 0 ]
     [ "$output" -ge 1 ]
 }
 
-@test "stripping actually removes debug sections" {
-    # Build an object that definitely carries debug info.
+@test "splitting actually removes debug sections from the binary" {
     printf 'int main(void){return 0;}\n' >"$STAGE/t.c"
     gcc -g -o "$STAGE/usr/bin/withdebug" "$STAGE/t.c"
     before=$(stat -c %s "$STAGE/usr/bin/withdebug")
-    kicad_strip_tree "$STAGE" >/dev/null
+    kicad_split_debug "$STAGE" "$DEBUGDIR" >/dev/null
     after=$(stat -c %s "$STAGE/usr/bin/withdebug")
     [ "$after" -lt "$before" ]
 }
 
+@test "the debug info is filed under the binary's own build ID" {
+    bid=$(readelf -n "$STAGE/usr/bin/kicad" | awk '/Build ID:/ { print $3; exit }')
+    [ -n "$bid" ]
+    kicad_split_debug "$STAGE" "$DEBUGDIR" >/dev/null
+    [ -f "$DEBUGDIR/.build-id/${bid:0:2}/${bid:2}.debug" ]
+}
+
+@test "gdb resolves a function and line number through the separated debug file" {
+    # The acceptance test for this whole mechanism: a stripped binary plus a
+    # build-id-indexed debug file must together give back what stripping
+    # took away. Anything less and the debug package is decoration.
+    printf 'int helper_fn(int x){return x*2;}\nint main(void){return helper_fn(21);}\n' \
+        >"$STAGE/h.c"
+    gcc -g -O0 -o "$STAGE/usr/bin/withhelper" "$STAGE/h.c"
+    kicad_split_debug "$STAGE" "$DEBUGDIR" >/dev/null
+
+    run file -b "$STAGE/usr/bin/withhelper"
+    [[ $output == *stripped* ]]
+    [[ $output != *"not stripped"* ]]
+
+    run gdb -batch -iex "set debug-file-directory $DEBUGDIR" \
+        -ex 'info line helper_fn' "$STAGE/usr/bin/withhelper"
+    [ "$status" -eq 0 ]
+    [[ $output == *helper_fn* ]]
+    [[ $output == *h.c* ]]
+}
+
+@test "debug files are not executable" {
+    # objcopy copies the source file's mode, so debug data extracted from a
+    # 0755 binary arrives executable unless something says otherwise.
+    kicad_split_debug "$STAGE" "$DEBUGDIR" >/dev/null
+    run find "$DEBUGDIR" -name '*.debug' -perm /111
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "an ELF with no build ID fails the split instead of losing its debug info" {
+    # Nothing can look up a debug file that has no build ID to file it under,
+    # so stripping such a binary anyway destroys the only copy. The build has
+    # to stop rather than ship a debug package quietly missing a binary.
+    printf 'int main(void){return 0;}\n' >"$STAGE/nb.c"
+    gcc -g -Wl,--build-id=none -o "$STAGE/usr/bin/nobuildid" "$STAGE/nb.c"
+    run kicad_split_debug "$STAGE" "$DEBUGDIR"
+    [ "$status" -ne 0 ]
+    [[ $output == *"no build ID"* ]]
+    # and the binary keeps its debug info rather than being stripped anyway
+    run file -b "$STAGE/usr/bin/nobuildid"
+    [[ $output == *"not stripped"* ]]
+}
+
+@test "a missing debug output directory argument is rejected" {
+    run kicad_split_debug "$STAGE" ""
+    [ "$status" -ne 0 ]
+}
+
 @test "a missing directory is rejected" {
-    run kicad_strip_tree "$STAGE/does-not-exist"
+    run kicad_split_debug "$STAGE/does-not-exist" "$DEBUGDIR"
     [ "$status" -ne 0 ]
 }
 
@@ -43,37 +98,37 @@ teardown() {
     printf 'int main(void){return 0;}\n' >"$STAGE/u.c"
     gcc -g -o "$STAGE/usr/bin/unwritable" "$STAGE/u.c"
     chmod 555 "$STAGE/usr/bin/unwritable"
-    run kicad_strip_tree "$STAGE"
+    run kicad_split_debug "$STAGE" "$DEBUGDIR"
     [ "$status" -ne 0 ]
 }
 
-@test "a non-executable ELF (mode 0644, like a .kiface module) is stripped and counted" {
+@test "a non-executable ELF (mode 0644, like a .kiface module) is split and counted" {
     # KiCad's plugin modules (_pcbnew.kiface, _eeschema.kiface, ...) install
     # this way: a regular file, no execute bit, no ".so" in the name.
     printf 'int main(void){return 0;}\n' >"$STAGE/m.c"
     gcc -g -o "$STAGE/usr/bin/_pcbnew.kiface" "$STAGE/m.c"
     chmod 644 "$STAGE/usr/bin/_pcbnew.kiface"
     before=$(stat -c %s "$STAGE/usr/bin/_pcbnew.kiface")
-    run kicad_strip_tree "$STAGE"
+    run kicad_split_debug "$STAGE" "$DEBUGDIR"
     [ "$status" -eq 0 ]
     [ "$output" -ge 1 ]
     after=$(stat -c %s "$STAGE/usr/bin/_pcbnew.kiface")
     [ "$after" -lt "$before" ]
 }
 
-@test "a filename containing a colon is still stripped and counted" {
+@test "a filename containing a colon is still split and counted" {
     printf 'int main(void){return 0;}\n' >"$STAGE/c.c"
     gcc -g -o "$STAGE/usr/bin/kicad:helper" "$STAGE/c.c"
     before=$(stat -c %s "$STAGE/usr/bin/kicad:helper")
-    run kicad_strip_tree "$STAGE"
+    run kicad_split_debug "$STAGE" "$DEBUGDIR"
     [ "$status" -eq 0 ]
-    # setup's "kicad" plus this test's "kicad:helper" both need stripping.
+    # setup's "kicad" plus this test's "kicad:helper" both need splitting.
     [ "$output" -ge 2 ]
     after=$(stat -c %s "$STAGE/usr/bin/kicad:helper")
     [ "$after" -lt "$before" ]
 }
 
-@test "an unreadable subdirectory fails the whole scan instead of silently stripping fewer files" {
+@test "an unreadable subdirectory fails the whole scan instead of silently splitting fewer files" {
     # A stage tree `find` cannot fully descend must not report success with
     # a partial count -- that is a .deb silently missing whatever lived
     # behind the unreadable directory.
@@ -81,7 +136,7 @@ teardown() {
     printf 'int f(void){return 0;}\n' >"$STAGE/s.c"
     gcc -g -shared -o "$STAGE/usr/lib/secret/hidden.so" "$STAGE/s.c"
     chmod 000 "$STAGE/usr/lib/secret"
-    run kicad_strip_tree "$STAGE"
+    run kicad_split_debug "$STAGE" "$DEBUGDIR"
     chmod 755 "$STAGE/usr/lib/secret"
     [ "$status" -ne 0 ]
 }
@@ -94,7 +149,7 @@ teardown() {
     printf 'int main(void){return 0;}\n' >"$STAGE/n.c"
     gcc -g -o "$STAGE/usr/bin/secretbin" "$STAGE/n.c"
     chmod 000 "$STAGE/usr/bin/secretbin"
-    run kicad_strip_tree "$STAGE"
+    run kicad_split_debug "$STAGE" "$DEBUGDIR"
     chmod 644 "$STAGE/usr/bin/secretbin"
     [ "$status" -ne 0 ]
 }
@@ -135,14 +190,14 @@ teardown() {
     [ "$status" -ne 0 ]
 }
 
-@test "a tree with no ELF files at all is rejected, not reported as zero stripped" {
+@test "a tree with no ELF files at all is rejected, not reported as zero split" {
     # count==0 must be indistinguishable from neither "an honestly ELF-free
     # tree" nor "the scan quietly failed" -- both are suspicious for a
     # staged KiCad tree, so both are fatal, matching kicad_shlibdeps.
     empty=$(mktemp -d)
     mkdir -p "$empty/usr/share/doc"
     echo "not an ELF file" >"$empty/usr/share/doc/readme.txt"
-    run kicad_strip_tree "$empty"
+    run kicad_split_debug "$empty" "$DEBUGDIR"
     rm -rf "$empty"
     [ "$status" -ne 0 ]
 }
@@ -159,10 +214,11 @@ teardown() {
         . "$1/lib/elf.sh"
         . "$1/lib/stage.sh"
         tree=$2
-        outer() { kicad_strip_tree "$tree" >/dev/null; }
+        debug=$3
+        outer() { kicad_split_debug "$tree" "$debug" >/dev/null; }
         outer
         echo REACHED_END
-    ' _ "$BATS_TEST_DIRNAME/.." "$STAGE"
+    ' _ "$BATS_TEST_DIRNAME/.." "$STAGE" "$DEBUGDIR"
     [ "$status" -eq 0 ]
     [[ $output == *REACHED_END* ]]
 }

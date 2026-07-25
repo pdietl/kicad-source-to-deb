@@ -1,19 +1,35 @@
 #!/usr/bin/env bash
-# Staging-tree helpers: strip debug info, and split the 3D models into their
-# own tree so they can ship as a separate package.
+# Staging-tree helpers: separate debug info from the binaries that carry it,
+# and split the 3D models into their own tree so they can ship as a separate
+# package.
 #
-# Stripping matches upstream: the official AppImage build extracts debug info
-# with objcopy --only-keep-debug, indexes it by build-id for debuginfod, then
-# runs strip --strip-unneeded over every ELF. Debug info is ~94% of binary size.
+# Debug info is ~96% of binary size, so it cannot stay in the main package,
+# but discarding it makes every crash and hang report unreadable. Extracting
+# it first matches what upstream's AppImage build does, and what Debian's
+# dh_strip does for a -dbgsym package.
 #
 # ELF discovery is shared with lib/shlibdeps.sh -- see lib/elf.sh.
 
-kicad_strip_tree() {
-    local dir=$1
-    local count=0 failed=0 f list
+# kicad_split_debug <stage-dir> <debug-dir>
+#
+# Moves each ELF's debug info out to <debug-dir>/.build-id/<xx>/<rest>.debug
+# and strips the original. Prints the number of files processed.
+#
+# The build-id layout is not decoration: it is the only way gdb finds a
+# separate debug file for a stripped binary that carries no debug link, and
+# it is what makes the debug package installable and removable independently
+# of the binaries it describes.
+kicad_split_debug() {
+    local dir=$1 debugdir=$2
+    local count=0 failed=0 f list bid dest
 
     if [ ! -d "$dir" ]; then
-        echo "kicad_strip_tree: no such directory: $dir" >&2
+        echo "kicad_split_debug: no such directory: $dir" >&2
+        return 1
+    fi
+
+    if [ -z "$debugdir" ]; then
+        echo "kicad_split_debug: no debug output directory given" >&2
         return 1
     fi
 
@@ -24,16 +40,43 @@ kicad_strip_tree() {
     # strip fewer files than the tree actually contains.
     list=$(mktemp)
     if ! kicad_find_elf "$dir" '*ELF*not stripped*' >"$list"; then
-        echo "kicad_strip_tree: ELF enumeration under $dir failed" >&2
+        echo "kicad_split_debug: ELF enumeration under $dir failed" >&2
         rm -f "$list"
         return 1
     fi
 
     while IFS= read -r -d '' f; do
+        bid=$(readelf -n "$f" 2>/dev/null | awk '/Build ID:/ { print $3; exit }')
+
+        # Without a build ID there is nowhere to file the debug info that
+        # anything could later look it up under, so stripping the binary
+        # anyway would destroy the only copy. Refuse instead: a debug
+        # package silently missing the one binary being debugged is worse
+        # than a build that stops and says so.
+        if [ -z "$bid" ]; then
+            echo "kicad_split_debug: no build ID, cannot separate debug info: $f" >&2
+            failed=1
+            continue
+        fi
+
+        dest="$debugdir/.build-id/${bid:0:2}/${bid:2}.debug"
+        mkdir -p "${dest%/*}"
+
+        # Ordering is load-bearing: extract first, strip only once the
+        # extraction succeeded, so a failure leaves the debug info in the
+        # binary rather than nowhere.
+        if ! objcopy --only-keep-debug "$f" "$dest"; then
+            echo "kicad_split_debug: objcopy failed on: $f" >&2
+            failed=1
+            continue
+        fi
+        # objcopy copies the source mode, which makes debug data executable.
+        chmod 0644 "$dest"
+
         if strip --strip-unneeded "$f"; then
             count=$((count + 1))
         else
-            echo "kicad_strip_tree: strip failed on: $f" >&2
+            echo "kicad_split_debug: strip failed on: $f" >&2
             failed=1
         fi
     done <"$list"
@@ -43,7 +86,7 @@ kicad_strip_tree() {
     # itself fatal -- matching kicad_shlibdeps, which already refuses to
     # emit empty Depends: for the same reason.
     if [ "$count" -eq 0 ]; then
-        echo "kicad_strip_tree: no ELF files found under $dir" >&2
+        echo "kicad_split_debug: no ELF files found under $dir" >&2
         return 1
     fi
 

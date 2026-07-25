@@ -3,3 +3,5 @@ work/
 *.buildinfo
 *.changes
 .superpowers/
+repaint-*/
+kicad-hang-*/

@@ -1,0 +1,21 @@
+Package: kicad-dbgsym
+Version: @VERSION@
+Section: debug
+Priority: optional
+Architecture: amd64
+Installed-Size: @INSTALLED_SIZE@
+Depends: kicad (= @VERSION@)
+Auto-Built-Package: debug-symbols
+Maintainer: Pete Dietl <petedietl@gmail.com>
+Homepage: https://www.kicad.org
+Description: debug symbols for kicad
+ Debug info for the binaries in the kicad package, separated out at build
+ time and indexed by build ID under /usr/lib/debug/.build-id.
+ .
+ gdb searches /usr/lib/debug by default, so installing this package is all
+ that is needed to turn addresses in a backtrace into function names, source
+ files and line numbers. Nothing needs configuring, and the kicad package
+ itself is byte-for-byte the same whether this is installed or not.
+ .
+ Only useful when reporting or investigating a crash or a hang. It is far
+ larger than the package it describes.
