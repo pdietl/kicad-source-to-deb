@@ -139,8 +139,14 @@ stage "Configuring KiCad"
 # so the warning carries no action here. -Wno-dev is deliberately not used
 # alongside it: that would also hide developer warnings worth acting on, of
 # which CMP0167 is one -- patches/ addresses that one rather than muting it.
+# KICAD_GAL_PROFILE compiles in per-frame PROF_TIMERs that split a redraw into
+# cached/noncached/overlay/composite/swap and emit them under the
+# KICAD_GAL_PROFILE trace mask. Off by default: the timers cost time in the
+# render loop they measure, which is not something a normally installed
+# package should pay. Build with KICAD_GAL_PROFILE=ON to diagnose a slow canvas.
 cmake -S "$WORKSPACE/kicad" -B "$WORKSPACE/build" -G Ninja -Wno-deprecated \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DKICAD_GAL_PROFILE="${KICAD_GAL_PROFILE:-OFF}" \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DDEFAULT_INSTALL_PATH=/usr \
     -DKICAD_BUILD_I18N=ON \
