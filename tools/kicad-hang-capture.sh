@@ -181,10 +181,13 @@ stop_collectors() {
 # into a silent subshell exit that leaves main() running with no pid.
 KICAD_PID=
 launch_kicad() {
-    # KICAD_ENABLE_WXTRACE gates KiCad's own wxLogTrace output; the masks
-    # themselves come from kicad_advanced, because this wxWidgets build
-    # ignores the WXTRACE variable entirely.
-    KICAD_ENABLE_WXTRACE=1 "$KICAD_BIN" "$@" 2>&1 |
+    # KiCad has two independent trace channels and a mask must be enabled
+    # on the one its call site uses. wxLogTrace: gated by KICAD_ENABLE_WXTRACE,
+    # masks from kicad_advanced, because this wxWidgets build ignores the
+    # WXTRACE variable entirely. KI_TRACE (TRACE_MANAGER): reads the same mask
+    # names from KICAD_TRACE and prints to stderr; the GAL profile's per-phase
+    # "Timing:" line uses this channel.
+    KICAD_ENABLE_WXTRACE=1 KICAD_TRACE="$TRACE_MASKS" "$KICAD_BIN" "$@" 2>&1 |
         gawk '{ printf "%s %s\n", strftime("%F %T"), $0; fflush() }' \
             >"$RUNDIR/10-kicad.log" &
     BG_PIDS+=($!)
@@ -408,6 +411,19 @@ write_manifest() {
             # whose call sites simply never ran is not evidence that tracing
             # failed to switch on, and reporting it as such cries wolf.
             echo 'WARN no trace output in the KiCad log -- masks may not have applied'
+        fi
+        # The per-phase "Timing:" line travels the KI_TRACE channel, which is
+        # switched on separately from wxLogTrace. When the installed build has
+        # the GAL timers compiled in, a run that never logged one means that
+        # channel was off, and the run cannot answer the question a profiling
+        # build exists to answer.
+        local gallib
+        gallib=$(ldconfig -p 2>/dev/null | awk '/libkigal\.so\./ { print $NF; exit }')
+        if [ -n "$gallib" ] && strings -- "$gallib" 2>/dev/null | grep -q '^Timing:' &&
+            [ -s "$RUNDIR/10-kicad.log" ] &&
+            ! grep -q 'Timing:' "$RUNDIR/10-kicad.log"; then
+            echo 'DEAD profiling build installed, but no Timing: lines were captured'
+            failed=1
         fi
         echo
         if [ "$failed" -eq 0 ]; then
