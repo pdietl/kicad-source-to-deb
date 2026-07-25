@@ -1,0 +1,156 @@
+Coalesce redundant native paint events on composited screens
+
+Raising or uncovering an editor window makes the window system deliver a
+burst of a dozen or more paint events within a second. Each one was
+answered with an unconditional render and present of a view that had not
+changed. Servers that throttle presentation of obscured windows complete
+each such present from a fallback timer -- Xwayland's runs at 1 Hz -- so
+during an editor switch the burst serializes into many one-second waits
+on the shared UI thread, freezing both editors for 5-11 s on a large
+design.
+
+Two changes:
+
+- onPaint answers a paint event with the clean-view-skippable repaint
+  when the screen is composited and a frame finished presenting less
+  than 150 ms ago. A dirty view still renders. Non-composited servers
+  keep the unconditional repaint, because exposed areas there are
+  genuinely lost.
+
+- The refresh timer exists to complete rate-limited Refresh() calls,
+  but repainted unconditionally where an undeferred Refresh() skips a
+  clean view. It now uses the same skippable path, so deferring a
+  refresh no longer strengthens it.
+
+Adds KIPLATFORM::UI::IsScreenComposited (gdk_screen_is_composited on
+GTK; always true on MSW and macOS, whose window servers always
+composite).
+
+diff --git a/common/draw_panel_gal.cpp b/common/draw_panel_gal.cpp
+index e2764da4f6..d6ea7d51d4 100644
+--- a/common/draw_panel_gal.cpp
++++ b/common/draw_panel_gal.cpp
+@@ -194,7 +194,21 @@ void EDA_DRAW_PANEL_GAL::SetFocus()
+ 
+ void EDA_DRAW_PANEL_GAL::onPaint( wxPaintEvent& WXUNUSED( aEvent ) )
+ {
+-    DoRePaint( false );
++    // Window systems deliver bursts of paint events when a window is raised or
++    // uncovered. When the view has not changed, rendering for each of them
++    // presents an identical frame, and a server that throttles presentation of
++    // obscured windows can block the UI thread for up to a second per present,
++    // turning one window raise into a multi-second freeze. On a composited
++    // screen the window system retains the presented frame, so a paint event
++    // arriving on the heels of a completed repaint can take the skippable
++    // path, which still renders whenever the view is dirty. Non-composited
++    // servers keep the unconditional repaint: exposed areas there are
++    // genuinely lost and must be redrawn.
++    wxLongLong sinceLastRepaint = wxGetLocalTimeMillis() - m_lastRepaintEnd;
++
++    bool allowSkip = sinceLastRepaint < 150 && KIPLATFORM::UI::IsScreenComposited( this );
++
++    DoRePaint( allowSkip );
+ }
+ 
+ 
+@@ -758,7 +772,21 @@ void EDA_DRAW_PANEL_GAL::onIdle( wxIdleEvent& aEvent )
+ 
+ void EDA_DRAW_PANEL_GAL::onRefreshTimer( wxTimerEvent& aEvent )
+ {
+-    ForceRefresh();
++    if( !m_drawingEnabled )
++    {
++        // ForceRefresh carries the GAL bootstrap: it attaches the paint
++        // handlers once the backend is ready, or re-arms this timer to try
++        // again.
++        ForceRefresh();
++        return;
++    }
++
++    // This timer completes rate-limited Refresh() calls, so it must repaint
++    // with the same clean-view skip an immediate Refresh() uses. Escalating
++    // to an unconditional repaint would turn every deferred refresh of an
++    // unchanged view into a full render.
++    if( !DoRePaint() )
++        RequestRefresh();
+ }
+ 
+ 
+diff --git a/libs/kiplatform/include/kiplatform/ui.h b/libs/kiplatform/include/kiplatform/ui.h
+index 94fca4312e..e21d28eb74 100644
+--- a/libs/kiplatform/include/kiplatform/ui.h
++++ b/libs/kiplatform/include/kiplatform/ui.h
+@@ -60,6 +60,15 @@ namespace KIPLATFORM
+          */
+         bool IsWindowActive( wxWindow* aWindow );
+ 
++        /**
++         * Check whether the screen containing the given window is composited, i.e. the window
++         * system retains every window's presented contents and repaints exposed areas from
++         * them without involving the application.
++         *
++         * @param aWindow is the window whose screen is checked
++         */
++        bool IsScreenComposited( wxWindow* aWindow );
++
+         /**
+          * Move a window's parent to be the top-level window and force the window to be on top.
+          *
+diff --git a/libs/kiplatform/port/wxgtk/ui.cpp b/libs/kiplatform/port/wxgtk/ui.cpp
+index 96c5574668..6d544e809d 100644
+--- a/libs/kiplatform/port/wxgtk/ui.cpp
++++ b/libs/kiplatform/port/wxgtk/ui.cpp
+@@ -160,6 +160,17 @@ bool KIPLATFORM::UI::IsWindowActive( wxWindow* aWindow )
+ }
+ 
+ 
++bool KIPLATFORM::UI::IsScreenComposited( wxWindow* aWindow )
++{
++    if( !aWindow )
++        return false;
++
++    GdkScreen* screen = gtk_widget_get_screen( static_cast<GtkWidget*>( aWindow->GetHandle() ) );
++
++    return screen && gdk_screen_is_composited( screen );
++}
++
++
+ void KIPLATFORM::UI::EnsureVisible( wxWindow* aWindow )
+ {
+     // Not needed on this platform
+diff --git a/libs/kiplatform/port/wxmsw/ui.cpp b/libs/kiplatform/port/wxmsw/ui.cpp
+index 79802a12f5..e78eed8434 100644
+--- a/libs/kiplatform/port/wxmsw/ui.cpp
++++ b/libs/kiplatform/port/wxmsw/ui.cpp
+@@ -77,6 +77,13 @@ bool KIPLATFORM::UI::IsWindowActive( wxWindow* aWindow )
+ }
+ 
+ 
++bool KIPLATFORM::UI::IsScreenComposited( wxWindow* aWindow )
++{
++    // DWM composition is always enabled on the Windows versions KiCad supports
++    return true;
++}
++
++
+ void KIPLATFORM::UI::EnsureVisible( wxWindow* aWindow )
+ {
+     // Not needed on this platform
+diff --git a/libs/kiplatform/port/wxosx/ui.mm b/libs/kiplatform/port/wxosx/ui.mm
+index 88b8224548..62852e883a 100644
+--- a/libs/kiplatform/port/wxosx/ui.mm
++++ b/libs/kiplatform/port/wxosx/ui.mm
+@@ -89,6 +89,13 @@ bool KIPLATFORM::UI::IsWindowActive( wxWindow* aWindow )
+ }
+ 
+ 
++bool KIPLATFORM::UI::IsScreenComposited( wxWindow* aWindow )
++{
++    // The macOS window server always composites
++    return true;
++}
++
++
+ void KIPLATFORM::UI::EnsureVisible( wxWindow* aWindow )
+ {
+     NSView* view = (NSView*)aWindow->GetHandle();
