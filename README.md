@@ -29,7 +29,8 @@ and packaging tooling:
         libocct-modeling-data-dev libocct-visualization-dev libocct-ocaf-dev \
         swig python3-dev python3-wxgtk4.0 libglm-dev libgit2-dev \
         libsecret-1-dev libcurl4-openssl-dev libngspice0-dev libnng-dev \
-        libboost-all-dev libcairo2-dev libfreetype-dev libharfbuzz-dev \
+        libboost-all-dev libcairo2-dev libfontconfig-dev libfreetype-dev \
+        libharfbuzz-dev libpixman-1-dev libgtk-3-dev libwayland-dev \
         libglu1-mesa-dev libgl1-mesa-dev \
         libprotobuf-dev protobuf-compiler gettext unixodbc-dev libspnav-dev \
         libzint-dev libpoppler-dev libpoppler-glib-dev zlib1g-dev libssl-dev \
