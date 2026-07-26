@@ -88,39 +88,20 @@ To capture where a hung KiCad is stuck:
 `sudo` is required whenever `/proc/sys/kernel/yama/ptrace_scope` is 1 (the
 Ubuntu default): a debugger may otherwise only attach to its own descendants.
 
-## Diagnosing a stalled canvas
-
-`tools/` holds two harnesses for the case where the UI stops answering the
-compositor and GNOME offers to kill the window.
-
-    OUTDIR=~/kicad-logs ./tools/kicad-hang-capture.sh   # launches KiCad, snapshots stalls
-    ./tools/measure-repaints.sh 30                      # attaches to a running KiCad
-
-The first launches KiCad with its trace masks on, follows the compositor and
-kernel journals, samples GPU load, and takes a symbolised backtrace of every
-thread each time the main thread stops answering -- repeatedly through a long
-stall, since one stack cannot tell a thread wedged on a single call from one
-grinding through a long sequence. It ends by asserting that each instrument
-actually produced data, so a dead collector cannot be mistaken for a quiet one.
-
-The second reports a per-second timeline of CPU and repaint counts, which
-separates "one frame is pathologically slow" from "repainting in a loop". It
-samples with `perf record --call-graph lbr`; frame-pointer unwinding is
-useless here because the NVIDIA driver is built without them, and `perf
-script` is avoided entirely because symbolising against the debug package
-takes minutes.
-
-Both need `kicad-dbgsym` installed to name anything, and `sudo` for the
-reasons above.
+## Profiling the canvas
 
 For a breakdown of where a single frame's time goes, build with the GAL
-timers compiled in and enable their trace mask:
+timers compiled in, then run KiCad with their trace mask selected:
 
     KICAD_GAL_PROFILE=ON ./build-kicad-deb.sh
+    KICAD_TRACE=KICAD_GAL_PROFILE kicad
 
-KiCad then logs `Timing: <total> <cached> <noncached> <overlay> <composite>
-<swap>` per frame. It is off by default because the timers cost time inside
-the render loop they measure.
+KiCad then writes `Timing: <total> <cached> <noncached> <overlay> <composite>
+<swap>` per frame to stderr. The timers are off by default because they cost
+time inside the render loop they measure.
+
+`KICAD_TRACE` is a separate channel from `KICAD_ENABLE_WXTRACE`, and both use
+the same mask names; setting only the latter leaves these lines unemitted.
 
 ## Patches
 
@@ -156,12 +137,11 @@ it syncs the workspace to the new revisions before building.
 A revision bump can strand a patch. `bats tests/patch.bats` reports that against
 the current checkout in seconds, rather than letting the build discover it.
 
-## Migrating from a /usr/local source install
+## If a source install came first
 
-`/usr/local/bin` precedes `/usr/bin` on PATH, so an old source install shadows
-the package:
-
-    sudo ./uninstall-usr-local.sh /path/to/build/install_manifest.txt
+`/usr/local/bin` precedes `/usr/bin` on PATH, so a KiCad previously installed
+under `/usr/local` keeps running after the package is installed, and apt
+reports success either way. Remove it before believing the package is live.
 
 KiCad also writes an absolute path into the per-user library table on first run
 and never revisits it, so a prefix change leaves the library list silently
