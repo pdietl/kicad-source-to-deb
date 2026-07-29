@@ -144,8 +144,14 @@ stage "Configuring KiCad"
 # KICAD_GAL_PROFILE trace mask. Off by default: the timers cost time in the
 # render loop they measure, which is not something a normally installed
 # package should pay. Build with KICAD_GAL_PROFILE=ON to diagnose a slow canvas.
+# CMAKE_INSTALL_MESSAGE=NEVER (here and on every library configure below):
+# the staging installs cover ~46k files and cmake --install otherwise prints
+# one "-- Installing:" line per file -- several MB of scroll per build. The
+# kicad_assert_min_files checks are what actually verify staging, so the
+# per-file narration adds nothing.
 cmake -S "$WORKSPACE/kicad" -B "$WORKSPACE/build" -G Ninja -Wno-deprecated \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DCMAKE_INSTALL_MESSAGE=NEVER \
     -DKICAD_GAL_PROFILE="${KICAD_GAL_PROFILE:-OFF}" \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DDEFAULT_INSTALL_PATH=/usr \
@@ -171,6 +177,7 @@ kicad_assert_min_files "$STAGE_KICAD/usr" 200 "kicad main install"
 # what the official build installs.
 stage "Staging kicad-symbols"
 cmake -S "$WORKSPACE/kicad-symbols" -B "$LIB_BUILD_ROOT/kicad-symbols" -G Ninja \
+    -DCMAKE_INSTALL_MESSAGE=NEVER \
     -DCMAKE_INSTALL_PREFIX=/usr -DKICAD_PACK_SYM_LIBRARIES=OFF
 DESTDIR=$STAGE_KICAD cmake --install "$LIB_BUILD_ROOT/kicad-symbols"
 kicad_assert_min_files "$STAGE_KICAD/usr/share/kicad/symbols" 1000 "kicad-symbols"
@@ -178,6 +185,7 @@ kicad_assert_min_files "$STAGE_KICAD/usr/share/kicad/symbols" 1000 "kicad-symbol
 for lib in kicad-footprints kicad-templates; do
     stage "Staging $lib"
     cmake -S "$WORKSPACE/$lib" -B "$LIB_BUILD_ROOT/$lib" -G Ninja \
+        -DCMAKE_INSTALL_MESSAGE=NEVER \
         -DCMAKE_INSTALL_PREFIX=/usr
     DESTDIR=$STAGE_KICAD cmake --install "$LIB_BUILD_ROOT/$lib"
 done
@@ -188,7 +196,7 @@ kicad_assert_min_files "$STAGE_KICAD/usr/share/kicad/template" 20 "kicad-templat
 # the shape directories, so no post-hoc move is needed.
 stage "Staging 3D models"
 cmake -S "$WORKSPACE/kicad-packages3D" -B "$LIB_BUILD_ROOT/kicad-packages3D" \
-    -G Ninja -DCMAKE_INSTALL_PREFIX=/usr
+    -G Ninja -DCMAKE_INSTALL_MESSAGE=NEVER -DCMAKE_INSTALL_PREFIX=/usr
 DESTDIR=$STAGE_3D cmake --install "$LIB_BUILD_ROOT/kicad-packages3D"
 kicad_assert_min_files "$STAGE_3D/usr/share/kicad/3dmodels" 1000 "kicad-packages3d"
 
