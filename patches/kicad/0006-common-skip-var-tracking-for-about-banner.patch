@@ -1,0 +1,36 @@
+common: skip variable tracking for the about banner
+
+buildKicadAboutBanner() is one enormous run of generated string appends;
+compiled with optimization and debug info its SSA graph exceeds GCC's
+max-vartrack-size limit, so GCC abandons -fvar-tracking-assignments for
+it anyway -- after a wasted first compile attempt and a diagnostic:
+
+  AboutDialog_main.cpp:58:13: note: variable tracking size limit
+  exceeded with '-fvar-tracking-assignments', retrying without
+
+Starting the file without VTA produces identical debug info while
+skipping the doomed attempt and its note. Guarded to GCC: clang has no
+such option.
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index c362888c0c..16f7f905d0 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -491,6 +491,17 @@ set( COMMON_ABOUT_DLG_SRCS
+     dialog_about/dialog_about_base.cpp
+     )
+ 
++if( CMAKE_CXX_COMPILER_ID STREQUAL "GNU" )
++    # buildKicadAboutBanner() is one enormous run of generated string appends;
++    # with optimization and debug info its SSA graph exceeds GCC's
++    # max-vartrack-size, so GCC abandons -fvar-tracking-assignments for it
++    # anyway -- after a wasted first attempt and a "variable tracking size
++    # limit exceeded" note. Starting without VTA produces the same debug info
++    # minus the retry and the note.
++    set_source_files_properties( dialog_about/AboutDialog_main.cpp PROPERTIES
++        COMPILE_OPTIONS "-fno-var-tracking-assignments" )
++endif()
++
+ set( COMMON_GIT_DLG_SRCS
+     dialogs/git/dialog_git_commit.cpp
+     dialogs/git/dialog_git_switch.cpp
